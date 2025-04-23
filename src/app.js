@@ -30,3 +30,14 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
+
+const mongoose = require('mongoose');
+
+// 数据库连接
+mongoose.connect(process.env.DB_URL || 'mongodb://localhost:27017/backend-project')
+    .then(() => {
+        console.log('数据库连接成功');
+    })
+    .catch(err => {
+        console.error('数据库连接失败:', err);
+    });

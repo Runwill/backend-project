@@ -30,13 +30,13 @@ class Controller {
             // 查找用户
             const user = await User.findOne({ email: username });
             if (!user) {
-                return res.status(401).json({ message: '用户名或密码错误' });
+                return res.status(401).json({ message: '用户不存在' });
             }
 
             // 验证密码
             const isMatch = await bcrypt.compare(password, user.password);
             if (!isMatch) {
-                return res.status(401).json({ message: '用户名或密码错误' });
+                return res.status(401).json({ message: '密码错误' });
             }
 
             // 生成 JWT
