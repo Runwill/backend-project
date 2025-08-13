@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const bodyParser = require('body-parser');
 const cors = require('cors'); // 引入 CORS 模块
 const routes = require('./routes/index');
@@ -7,7 +8,17 @@ const app = express();
 
 // 启用 CORS
 app.use(cors({
-    origin: 'http://127.0.0.1:5500', // 允许的前端地址
+    origin: (origin, callback) => {
+        const allowed = [
+            'http://127.0.0.1:5500',
+            'http://localhost:5500',
+            'http://127.0.0.1:3000',
+            'http://localhost:3000'
+        ];
+        // 允许无 Origin 的请求（如本地工具、curl）
+        if (!origin || allowed.includes(origin)) return callback(null, true);
+        return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE'], // 允许的 HTTP 方法
     credentials: true // 如果需要发送 Cookie 或认证信息
 }));
@@ -15,6 +26,9 @@ app.use(cors({
 // Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+
+// 静态资源服务：用于访问上传的头像
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 // Routes
 app.use('/api', routes);

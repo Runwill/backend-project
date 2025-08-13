@@ -1,9 +1,63 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
-const { User, Character, Card, TermDynamic, TermFixed, Skill } = require('../models/index'); // 正确引入所有模型
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange } = require('../models/index'); // 正确引入所有模型
 
 const router = express.Router();
+
+// 配置 multer 存储到 uploads/avatar 目录
+const uploadDir = path.join(__dirname, '..', '..', 'uploads', 'avatar');
+fs.mkdirSync(uploadDir, { recursive: true });
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, uploadDir);
+    },
+    filename: function (req, file, cb) {
+        const ext = path.extname(file.originalname) || '.png';
+        const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+        cb(null, safeName);
+    }
+});
+const upload = multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+        // 仅允许常见图片类型
+        const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'];
+        if (allowed.includes(file.mimetype)) cb(null, true);
+        else cb(new Error('不支持的文件类型'));
+    },
+    limits: { fileSize: 2 * 1024 * 1024 } // 2MB
+});
+
+// 简易鉴权：解析 JWT，附加 req.user
+function auth(req, res, next) {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) return res.status(401).json({ message: '未授权' });
+    try {
+        const payload = jwt.verify(token, process.env.SECRET_KEY || 'your_secret_key');
+        req.user = payload; // { id, username }
+        next();
+    } catch (e) {
+        return res.status(401).json({ message: '未授权' });
+    }
+}
+
+// 读取数据库中的用户并校验角色（moderator 或 admin 可审核）
+async function requireReviewer(req, res, next) {
+    try {
+        if (!req.user?.id) return res.status(401).json({ message: '未授权' });
+        const u = await User.findById(req.user.id);
+        if (!u) return res.status(401).json({ message: '未授权' });
+        if (u.role === 'admin' || u.role === 'moderator') return next();
+        return res.status(403).json({ message: '无权限' });
+    } catch (e) {
+        return res.status(500).json({ message: '服务器错误' });
+    }
+}
 
 // 登录方法
 router.post('/login', async (req, res) => {
@@ -39,7 +93,8 @@ router.post('/login', async (req, res) => {
             user: {
                 id: user._id,
                 username: user.username,
-                role: user.role
+                role: user.role,
+                avatar: user.avatar || ''
             }
         });
     } catch (error) {
@@ -50,7 +105,7 @@ router.post('/login', async (req, res) => {
 
 // 注册方法
 router.post('/register', async (req, res) => {
-    const { username, password, role } = req.body;
+    const { username, password, role, avatar } = req.body;
 
     try {
         // 检查用户名是否已存在
@@ -64,6 +119,7 @@ router.post('/register', async (req, res) => {
             username, 
             password, 
             role: role || 'user', 
+            avatar: avatar || '',
             isActive: false // 默认未激活
         });
         await newUser.save();
@@ -84,7 +140,7 @@ router.post('/register', async (req, res) => {
 
 // 修改用户名和密码方法
 router.put('/update', async (req, res) => {
-    const { id, newUsername, newPassword } = req.body;
+    const { id, newUsername, newPassword, newAvatar } = req.body;
 
     try {
         // 查找用户
@@ -94,11 +150,25 @@ router.put('/update', async (req, res) => {
         }
 
         // 更新用户名和密码
-        if (newUsername) {
-            user.username = newUsername;
+        if (typeof newUsername === 'string') {
+            const trimmed = newUsername.trim();
+            if (trimmed && trimmed !== user.username) {
+                // 若修改了用户名，先检查是否已存在
+                const exists = await User.findOne({ username: trimmed });
+                if (exists) {
+                    return res.status(400).json({ message: '用户已存在' });
+                }
+                user.username = trimmed;
+            }
         }
         if (newPassword) {
-            user.password = await bcrypt.hash(newPassword, 10);
+            // 直接赋值明文，交由 userSchema.pre('save') 统一加密，避免二次哈希
+            user.password = newPassword;
+        }
+
+        // 更新头像
+        if (typeof newAvatar === 'string') {
+            user.avatar = newAvatar;
         }
 
         await user.save();
@@ -106,12 +176,16 @@ router.put('/update', async (req, res) => {
         res.status(200).json({ message: '用户信息更新成功' });
     } catch (error) {
         console.error('更新失败:', error);
+        // 兜底处理唯一索引冲突
+        if (error && error.code === 11000) {
+            return res.status(400).json({ message: '用户已存在' });
+        }
         res.status(500).json({ message: '服务器错误' });
     }
 });
 
 
-router.get('/pending-users', async (req, res) => {
+router.get('/pending-users', auth, requireReviewer, async (req, res) => {
     try {
         // 查找所有未激活的用户
         const pendingUsers = await User.find({ isActive: false });
@@ -122,7 +196,7 @@ router.get('/pending-users', async (req, res) => {
     }
 });
 
-router.post('/approve', async (req, res) => {
+router.post('/approve', auth, requireReviewer, async (req, res) => {
     const { userId, action } = req.body; // action: 'approve' 或 'reject'
 
     try {
@@ -295,3 +369,114 @@ router.post('/skill/import', async (req, res) => {
 
 
 module.exports = router;
+
+// 获取用户信息（用于刷新头像等）
+router.get('/user/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id) return res.status(400).json({ message: '缺少用户ID' });
+        const user = await User.findById(id);
+        if (!user) return res.status(404).json({ message: '用户不存在' });
+        return res.status(200).json({
+            id: user._id,
+            username: user.username,
+            role: user.role,
+            avatar: user.avatar || '',
+            isActive: !!user.isActive,
+            createdAt: user.createdAt
+        });
+    } catch (error) {
+        console.error('获取用户信息失败:', error);
+        res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 上传头像-提交审核（不直接生效）
+router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
+    try {
+        const userId = req.body.userId;
+        if (!userId) {
+            return res.status(400).json({ message: '缺少用户ID' });
+        }
+        if (!req.file) {
+            return res.status(400).json({ message: '未接收到文件' });
+        }
+        const relativeUrl = `/uploads/avatar/${req.file.filename}`;
+
+        // 若已有 pending 记录，替换图片并复用该记录；否则创建新记录
+        let record = await AvatarChange.findOne({ user: userId, status: 'pending' });
+        if (record) {
+            record.url = relativeUrl;
+            await record.save();
+        } else {
+            record = await AvatarChange.create({ user: userId, url: relativeUrl });
+        }
+
+        // 通知管理员（日志代替）
+        const admins = await User.find({ role: 'admin' });
+        admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交头像审核 ${relativeUrl}`));
+
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        return res.status(200).json({ message: '头像已提交审核', url: `${baseUrl}${relativeUrl}`, status: record.status });
+    } catch (error) {
+        console.error('上传或提交审核失败:', error);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 获取待审核头像列表（管理员）
+router.get('/avatar/pending', auth, requireReviewer, async (req, res) => {
+    try {
+        const list = await AvatarChange.find({ status: 'pending' }).populate('user', 'username role');
+        res.status(200).json(list || []);
+    } catch (error) {
+        console.error('获取待审核头像失败:', error);
+        res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 获取当前用户的待审核头像（用于个人查看）
+router.get('/avatar/pending/me', async (req, res) => {
+    try {
+        const userId = req.query.userId;
+        if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+        const record = await AvatarChange.findOne({ user: userId, status: 'pending' });
+        return res.status(200).json(record || null);
+    } catch (error) {
+        console.error('获取个人待审核头像失败:', error);
+        res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 审核头像（管理员）：approve 或 reject
+router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
+    try {
+        const { recordId, action, reason } = req.body;
+        if (!recordId || !['approve', 'reject'].includes(action)) {
+            return res.status(400).json({ message: '参数无效' });
+        }
+        const record = await AvatarChange.findById(recordId);
+        if (!record) return res.status(404).json({ message: '记录不存在' });
+        if (record.status !== 'pending') return res.status(400).json({ message: '该记录已处理' });
+
+        if (action === 'approve') {
+            // 审核通过：把用户 avatar 更新为该 url
+            await User.findByIdAndUpdate(record.user, { avatar: record.url });
+            record.status = 'approved';
+            record.reason = reason || '';
+            record.reviewedAt = new Date();
+            await record.save();
+            return res.status(200).json({ message: '已通过', record });
+        } else {
+            // 拒绝：仅更新状态与备注
+            record.status = 'rejected';
+            record.reason = reason || '';
+            record.reviewedAt = new Date();
+            await record.save();
+            return res.status(200).json({ message: '已拒绝', record });
+        }
+    } catch (error) {
+        console.error('审核失败:', error);
+        res.status(500).json({ message: '服务器错误' });
+    }
+});

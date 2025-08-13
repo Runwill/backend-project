@@ -13,8 +13,14 @@ const userSchema = new mongoose.Schema({
     },
     role: {
         type: String,
-        enum: ['user', 'admin'], // 定义权限等级
+        enum: ['user', 'moderator', 'admin'], // 定义权限等级：普通/审核员/管理员
         default: 'user' // 默认权限为普通用户
+    },
+    // 用户头像（可选）：存储为 URL 或相对路径
+    avatar: {
+        type: String,
+        trim: true,
+        default: ''
     },
     createdAt: {
         type: Date,
@@ -162,12 +168,26 @@ const skillSchema = new mongoose.Schema({
 // 创建复合唯一索引：strength + name 的组合必须唯一
 skillSchema.index({ strength: 1, name: 1 }, { unique: true });
 
+// 头像审核记录（待审核/已通过/已拒绝）
+const avatarChangeSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    url: { type: String, required: true }, // 相对路径，如 /uploads/avatar/xxxx.png
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    reason: { type: String, default: '' }, // 审核备注
+    createdAt: { type: Date, default: Date.now },
+    reviewedAt: { type: Date }
+});
+
+// 限制同一用户仅存在1条待审核记录
+avatarChangeSchema.index({ user: 1 }, { unique: true, partialFilterExpression: { status: 'pending' } });
+
 const User = mongoose.model('User', userSchema);
 const Character = mongoose.model('Character', characterSchema);
 const Card = mongoose.model('Card', cardSchema);
 const TermDynamic = mongoose.model('TermDynamic', termDynamicSchema);
 const TermFixed = mongoose.model('TermFixed', termFixedSchema);
 const Skill = mongoose.model('Skill', skillSchema);
+const AvatarChange = mongoose.model('AvatarChange', avatarChangeSchema);
 
 module.exports = {
     User,
@@ -175,5 +195,6 @@ module.exports = {
     Card,
     TermDynamic,
     TermFixed,
-    Skill
+    Skill,
+    AvatarChange
 };
