@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start backend server (node)",
+			"type": "shell",
+			"command": "node src/app.js",
+			"problemMatcher": [
+				"$eslint-stylish"
+			],
+			"group": "build"
+		}
+	]
+}

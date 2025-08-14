@@ -32,6 +32,31 @@ const upload = multer({
     limits: { fileSize: 2 * 1024 * 1024 } // 2MB
 });
 
+// 安全删除工具：仅删除 uploads/avatar 下由我们生成的文件
+function getFilePathFromUrl(url) {
+    try {
+        if (!url) return null;
+        // 仅使用文件名，避免路径穿越
+        const fileName = path.basename(url);
+        if (!fileName) return null;
+        return path.join(uploadDir, fileName);
+    } catch (e) {
+        return null;
+    }
+}
+
+async function deleteAvatarFileByUrl(url) {
+    const filePath = getFilePathFromUrl(url);
+    if (!filePath) return;
+    try {
+        await fs.promises.unlink(filePath);
+        console.log('已清理头像文件:', filePath);
+    } catch (e) {
+        if (e && e.code === 'ENOENT') return; // 文件不存在则忽略
+        console.warn('删除头像文件失败:', e && e.message ? e.message : e);
+    }
+}
+
 // 简易鉴权：解析 JWT，附加 req.user
 function auth(req, res, next) {
     const header = req.headers.authorization || '';
@@ -211,7 +236,18 @@ router.post('/approve', auth, requireReviewer, async (req, res) => {
             await user.save();
             res.status(200).json({ message: '用户已成功激活' });
         } else if (action === 'reject') {
-            // 删除用户
+            // 拒绝注册：删除用户以及其相关头像文件与待审核记录
+            // 1) 删除该用户当前头像文件（如果有）
+            if (user.avatar) {
+                await deleteAvatarFileByUrl(user.avatar);
+            }
+            // 2) 删除所有该用户的头像审核记录文件（pending/approved/rejected），然后删除记录
+            const changes = await AvatarChange.find({ user: userId });
+            for (const c of changes) {
+                if (c && c.url) await deleteAvatarFileByUrl(c.url);
+            }
+            await AvatarChange.deleteMany({ user: userId });
+            // 3) 删除用户
             await User.findByIdAndDelete(userId);
             res.status(200).json({ message: '用户已被退回并删除' });
         } else {
@@ -406,8 +442,13 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
         // 若已有 pending 记录，替换图片并复用该记录；否则创建新记录
         let record = await AvatarChange.findOne({ user: userId, status: 'pending' });
         if (record) {
+            const oldUrl = record.url;
             record.url = relativeUrl;
             await record.save();
+            // 清理上一张替换下来的待审核图片文件
+            if (oldUrl && oldUrl !== relativeUrl) {
+                await deleteAvatarFileByUrl(oldUrl);
+            }
         } else {
             record = await AvatarChange.create({ user: userId, url: relativeUrl });
         }
@@ -420,6 +461,11 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
         return res.status(200).json({ message: '头像已提交审核', url: `${baseUrl}${relativeUrl}`, status: record.status });
     } catch (error) {
         console.error('上传或提交审核失败:', error);
+        // 出错则尝试删除刚上传的临时文件，避免产生垃圾文件
+        if (req && req.file && req.file.filename) {
+            const tmpUrl = `/uploads/avatar/${req.file.filename}`;
+            await deleteAvatarFileByUrl(tmpUrl);
+        }
         return res.status(500).json({ message: '服务器错误' });
     }
 });
@@ -461,7 +507,18 @@ router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
 
         if (action === 'approve') {
             // 审核通过：把用户 avatar 更新为该 url
-            await User.findByIdAndUpdate(record.user, { avatar: record.url });
+            const user = await User.findById(record.user);
+            if (!user) return res.status(404).json({ message: '用户不存在' });
+            const oldAvatar = user.avatar;
+            user.avatar = record.url;
+            await user.save();
+            // 清理旧头像文件（如果没有被其他用户引用且与新头像不同）
+            if (oldAvatar && oldAvatar !== record.url) {
+                const cnt = await User.countDocuments({ _id: { $ne: user._id }, avatar: oldAvatar });
+                if (cnt === 0) {
+                    await deleteAvatarFileByUrl(oldAvatar);
+                }
+            }
             record.status = 'approved';
             record.reason = reason || '';
             record.reviewedAt = new Date();
@@ -473,6 +530,10 @@ router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
             record.reason = reason || '';
             record.reviewedAt = new Date();
             await record.save();
+            // 清理被拒绝的头像文件
+            if (record.url) {
+                await deleteAvatarFileByUrl(record.url);
+            }
             return res.status(200).json({ message: '已拒绝', record });
         }
     } catch (error) {
