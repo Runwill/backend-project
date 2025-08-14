@@ -84,6 +84,19 @@ async function requireReviewer(req, res, next) {
     }
 }
 
+// 仅管理员
+async function requireAdmin(req, res, next) {
+    try {
+        if (!req.user?.id) return res.status(401).json({ message: '未授权' });
+        const u = await User.findById(req.user.id);
+        if (!u) return res.status(401).json({ message: '未授权' });
+        if (u.role === 'admin') return next();
+        return res.status(403).json({ message: '无权限' });
+    } catch (e) {
+        return res.status(500).json({ message: '服务器错误' });
+    }
+}
+
 // 登录方法
 router.post('/login', async (req, res) => {
     const { username, password } = req.body;
@@ -539,5 +552,44 @@ router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
     } catch (error) {
         console.error('审核失败:', error);
         res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 词元内联更新（仅审核员/管理员）
+router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
+    try {
+        const { collection, id, path: dotPath, value, valueType } = req.body || {};
+        if (!collection || !id || !dotPath) {
+            return res.status(400).json({ message: '参数无效' });
+        }
+        // 禁止更新危险字段
+        if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
+            return res.status(400).json({ message: '该字段不允许修改' });
+        }
+        // 映射集合到模型
+        const modelMap = {
+            'term-fixed': TermFixed,
+            'term-dynamic': TermDynamic,
+            'card': Card,
+            'character': Character,
+            'skill': Skill
+        };
+        const Model = modelMap[collection];
+        if (!Model) return res.status(400).json({ message: '未知集合' });
+
+        // 类型转换（与前端一致）
+        let casted = value;
+        if (valueType === 'number') casted = Number(value);
+        if (valueType === 'boolean') casted = Boolean(value);
+
+        // 执行更新
+        const update = { $set: { [dotPath]: casted } };
+        const doc = await Model.findByIdAndUpdate(id, update, { new: true });
+        if (!doc) return res.status(404).json({ message: '文档不存在' });
+        return res.status(200).json({ message: '更新成功', doc });
+    } catch (e) {
+        console.error('tokens/update 失败:', e);
+        // 可能是路径错误或类型校验失败
+        return res.status(500).json({ message: '服务器错误' });
     }
 });
