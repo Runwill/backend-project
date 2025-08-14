@@ -555,7 +555,7 @@ router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
     }
 });
 
-// 词元内联更新（仅审核员/管理员）
+// 词元内联更新（仅管理员）
 router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     try {
         const { collection, id, path: dotPath, value, valueType } = req.body || {};
@@ -590,6 +590,66 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     } catch (e) {
         console.error('tokens/update 失败:', e);
         // 可能是路径错误或类型校验失败
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 词元内联删除（仅管理员）：删除对象字段或数组元素
+router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
+    try {
+        const { collection, id, path: dotPath } = req.body || {};
+        if (!collection || !id || !dotPath) {
+            return res.status(400).json({ message: '参数无效' });
+        }
+        // 禁止删除危险字段
+        if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
+            return res.status(400).json({ message: '该字段不允许删除' });
+        }
+        const modelMap = {
+            'term-fixed': TermFixed,
+            'term-dynamic': TermDynamic,
+            'card': Card,
+            'character': Character,
+            'skill': Skill
+        };
+        const Model = modelMap[collection];
+        if (!Model) return res.status(400).json({ message: '未知集合' });
+
+        const doc = await Model.findById(id);
+        if (!doc) return res.status(404).json({ message: '文档不存在' });
+
+        const parts = String(dotPath).split('.');
+        const rootMark = parts[0];
+        let parent = doc;
+        // 走到倒数第二段
+        for (let i = 0; i < parts.length - 1; i++) {
+            const k = parts[i];
+            const key = /^\d+$/.test(k) ? Number(k) : k;
+            if (parent == null) return res.status(400).json({ message: '路径不存在' });
+            parent = parent[key];
+        }
+        const lastKeyRaw = parts[parts.length - 1];
+        const isIndex = /^\d+$/.test(lastKeyRaw);
+        const lastKey = isIndex ? Number(lastKeyRaw) : lastKeyRaw;
+        if (parent == null) return res.status(400).json({ message: '路径不存在' });
+
+        if (Array.isArray(parent) && isIndex) {
+            if (lastKey < 0 || lastKey >= parent.length) {
+                return res.status(400).json({ message: '数组下标越界' });
+            }
+            parent.splice(lastKey, 1);
+        } else if (typeof parent === 'object') {
+            if (!(lastKey in parent)) return res.status(400).json({ message: '字段不存在' });
+            delete parent[lastKey];
+        } else {
+            return res.status(400).json({ message: '路径不是可删除的对象/数组' });
+        }
+
+        try { doc.markModified(rootMark); } catch (_) {}
+        await doc.save();
+        return res.status(200).json({ message: '删除成功' });
+    } catch (e) {
+        console.error('tokens/delete 失败:', e);
         return res.status(500).json({ message: '服务器错误' });
     }
 });
