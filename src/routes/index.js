@@ -653,3 +653,139 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
         return res.status(500).json({ message: '服务器错误' });
     }
 });
+
+// 推断集合字段结构（用于前端生成新增模板）
+router.get('/tokens/shape', auth, requireAdmin, async (req, res) => {
+    try {
+        const collection = req.query.collection;
+        if (!collection) return res.status(400).json({ message: '缺少 collection' });
+        const modelMap = {
+            'term-fixed': TermFixed,
+            'term-dynamic': TermDynamic,
+            'card': Card,
+            'character': Character,
+            'skill': Skill
+        };
+        const Model = modelMap[collection];
+        if (!Model) return res.status(400).json({ message: '未知集合' });
+
+        const schema = Model.schema;
+        const fields = [];
+        const seen = new Set();
+        // 从 schema 提取字段
+        for (const [path, desc] of Object.entries(schema.paths)) {
+            if (path === '__v') continue;
+            const f = {
+                name: path,
+                type: desc.instance || 'Mixed',
+                required: !!(desc.options && desc.options.required),
+            };
+            if (desc.enumValues && desc.enumValues.length) f.enum = desc.enumValues;
+            if (desc.options && Object.prototype.hasOwnProperty.call(desc.options, 'default')) f.default = desc.options.default;
+            fields.push(f);
+            seen.add(path);
+        }
+        // 对数组子文档（如 skill.role）提供子结构提示
+        for (const [path, desc] of Object.entries(schema.paths)) {
+            if (desc.instance === 'Array' && desc.schema && desc.schema.paths) {
+                const sub = [];
+                for (const [sp, sd] of Object.entries(desc.schema.paths)) {
+                    if (sp === '_id') continue; // 子文档默认 _id
+                    sub.push({ name: sp, type: sd.instance || 'Mixed', required: !!(sd.options && sd.options.required) });
+                }
+                fields.push({ name: path + '[]', type: 'Subdocument[]', fields: sub });
+            }
+        }
+
+        // 从样本文档中收集 Mixed/对象的可能键（最多 100 条）
+        const docs = await Model.find().limit(100).lean();
+        const suggest = {};
+        const addKey = (bucket, key) => { if (!bucket.includes(key)) bucket.push(key); };
+        const collectKeys = (obj, base, bucket) => {
+            if (!obj || typeof obj !== 'object') return;
+            for (const k of Object.keys(obj)) {
+                addKey(bucket, base ? base + '.' + k : k);
+                const v = obj[k];
+                if (v && typeof v === 'object' && !Array.isArray(v)) collectKeys(v, base ? base + '.' + k : k, bucket);
+            }
+        };
+        const mixedCandidates = fields.filter(f => f.type === 'Mixed').map(f => f.name);
+        const mixedKeys = [];
+        for (const d of docs) {
+            for (const m of mixedCandidates) {
+                if (d[m]) collectKeys(d[m], m, mixedKeys);
+            }
+        }
+        suggest.mixedKeys = Array.from(new Set(mixedKeys));
+
+        // 一些集合的“下一 ID”等便民建议
+        if (collection === 'character') {
+            const ids = (docs || []).map(x => Number(x.id)).filter(x => Number.isFinite(x));
+            const nextId = ids.length ? Math.max(...ids) + 1 : 1;
+            suggest.nextId = nextId;
+        }
+        if (collection === 'skill') {
+            suggest.strengthEnum = [0,1,2];
+        }
+
+        return res.status(200).json({ collection, fields, suggest });
+    } catch (e) {
+        console.error('tokens/shape 失败:', e);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 新增文档（仅管理员）
+router.post('/tokens/create', auth, requireAdmin, async (req, res) => {
+    try {
+        const { collection, data } = req.body || {};
+        if (!collection || !data || typeof data !== 'object') {
+            return res.status(400).json({ message: '参数无效' });
+        }
+        const modelMap = {
+            'term-fixed': TermFixed,
+            'term-dynamic': TermDynamic,
+            'card': Card,
+            'character': Character,
+            'skill': Skill
+        };
+        const Model = modelMap[collection];
+        if (!Model) return res.status(400).json({ message: '未知集合' });
+        const doc = new Model(data);
+        await doc.save();
+        return res.status(201).json({ message: '创建成功', doc });
+    } catch (e) {
+        console.error('tokens/create 失败:', e);
+        if (e && e.code === 11000) {
+            return res.status(400).json({ message: '唯一索引冲突（例如重复的唯一字段）' });
+        }
+        // mongoose 验证错误
+        if (e && e.name === 'ValidationError') {
+            return res.status(400).json({ message: e.message });
+        }
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 删除整个文档（仅管理员）
+router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
+    try {
+        const { collection, id } = req.body || {};
+        if (!collection || !id) return res.status(400).json({ message: '参数无效' });
+        const modelMap = {
+            'term-fixed': TermFixed,
+            'term-dynamic': TermDynamic,
+            'card': Card,
+            'character': Character,
+            'skill': Skill
+        };
+        const Model = modelMap[collection];
+        if (!Model) return res.status(400).json({ message: '未知集合' });
+        const doc = await Model.findByIdAndDelete(id);
+        if (!doc) return res.status(404).json({ message: '文档不存在' });
+        return res.status(200).json({ message: '删除成功' });
+    } catch (e) {
+        console.error('tokens/remove 失败:', e);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
