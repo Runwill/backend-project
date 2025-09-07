@@ -4,9 +4,12 @@ const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange } = require('../models/index'); // 正确引入所有模型
+const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index'); // 正确引入所有模型
 
 const router = express.Router();
+
+// Realtime SSE removed; keep a no-op broadcaster for compatibility
+function sseBroadcast(_) { /* no-op */ }
 
 // 配置 multer 存储到 uploads/avatar 目录
 const uploadDir = path.join(__dirname, '..', '..', 'uploads', 'avatar');
@@ -558,7 +561,7 @@ router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
 // 词元内联更新（仅管理员）
 router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     try {
-        const { collection, id, path: dotPath, value, valueType } = req.body || {};
+    const { collection, id, path: dotPath, value, valueType } = req.body || {};
         if (!collection || !id || !dotPath) {
             return res.status(400).json({ message: '参数无效' });
         }
@@ -586,6 +589,15 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
         const update = { $set: { [dotPath]: casted } };
         const doc = await Model.findByIdAndUpdate(id, update, { new: true });
         if (!doc) return res.status(404).json({ message: '文档不存在' });
+        // Persist log + broadcast realtime event
+        try {
+            const sourceId = req.header('x-client-id') || '';
+            const username = (req.user && req.user.username) || '';
+            // Save to DB
+            await TokenLog.create({ type: 'update', collection, docId: String(id), path: dotPath, value: casted, username, sourceId });
+            // SSE
+            sseBroadcast({ type: 'update', collection, id, path: dotPath, value: casted, sourceId });
+        } catch (_) { }
         return res.status(200).json({ message: '更新成功', doc });
     } catch (e) {
         console.error('tokens/update 失败:', e);
@@ -633,6 +645,10 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
         const lastKey = isIndex ? Number(lastKeyRaw) : lastKeyRaw;
         if (parent == null) return res.status(400).json({ message: '路径不存在' });
 
+        // Snapshot previous value
+        let prevValue;
+        try { prevValue = Array.isArray(parent) && isIndex ? parent[lastKey] : (typeof parent === 'object' ? parent[lastKey] : undefined); } catch (_) { prevValue = undefined; }
+
         if (Array.isArray(parent) && isIndex) {
             if (lastKey < 0 || lastKey >= parent.length) {
                 return res.status(400).json({ message: '数组下标越界' });
@@ -647,6 +663,13 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
 
         try { doc.markModified(rootMark); } catch (_) {}
         await doc.save();
+        // Persist log + broadcast realtime event
+        try {
+            const sourceId = req.header('x-client-id') || '';
+            const username = (req.user && req.user.username) || '';
+            await TokenLog.create({ type: 'delete-field', collection, docId: String(id), path: dotPath, from: prevValue, username, sourceId });
+            sseBroadcast({ type: 'delete-field', collection, id, path: dotPath, from: prevValue, sourceId });
+        } catch (_) { }
         return res.status(200).json({ message: '删除成功' });
     } catch (e) {
         console.error('tokens/delete 失败:', e);
@@ -753,6 +776,15 @@ router.post('/tokens/create', auth, requireAdmin, async (req, res) => {
         if (!Model) return res.status(400).json({ message: '未知集合' });
         const doc = new Model(data);
         await doc.save();
+        // Persist log + broadcast realtime event
+        try {
+            const sourceId = req.header('x-client-id') || '';
+            const username = (req.user && req.user.username) || '';
+            // Pick brief
+            const brief = (()=>{ try{ const d = doc.toObject ? doc.toObject() : doc; const o={}; if(d.en) o.en=d.en; if(d.cn) o.cn=d.cn; if(d.name) o.name=d.name; if(d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+            await TokenLog.create({ type: 'create', collection, docId: String(doc._id), doc: brief, username, sourceId });
+            sseBroadcast({ type: 'create', collection, id: doc._id, doc: brief, sourceId });
+        } catch (_) { }
         return res.status(201).json({ message: '创建成功', doc });
     } catch (e) {
         console.error('tokens/create 失败:', e);
@@ -783,9 +815,39 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
         if (!Model) return res.status(400).json({ message: '未知集合' });
         const doc = await Model.findByIdAndDelete(id);
         if (!doc) return res.status(404).json({ message: '文档不存在' });
+        // Persist log + broadcast realtime event
+        try {
+            const sourceId = req.header('x-client-id') || '';
+            const username = (req.user && req.user.username) || '';
+            await TokenLog.create({ type: 'delete-doc', collection, docId: String(id), username, sourceId });
+            sseBroadcast({ type: 'delete-doc', collection, id, sourceId });
+        } catch (_) { }
         return res.status(200).json({ message: '删除成功' });
     } catch (e) {
         console.error('tokens/remove 失败:', e);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 统一存储日志：分页拉取（默认最近，按时间逆序）
+router.get('/tokens/logs', auth, async (req, res) => {
+    try {
+        const { page = 1, pageSize = 100, since, until, collection, docId } = req.query;
+        const p = Math.max(1, parseInt(page, 10) || 1);
+        const ps = Math.min(500, Math.max(1, parseInt(pageSize, 10) || 100));
+        const q = {};
+        if (since || until) {
+            q.createdAt = {};
+            if (since) q.createdAt.$gte = new Date(since);
+            if (until) q.createdAt.$lte = new Date(until);
+        }
+        if (collection) q.collection = String(collection);
+        if (docId) q.docId = String(docId);
+        const total = await TokenLog.countDocuments(q);
+        const list = await TokenLog.find(q).sort({ createdAt: -1 }).skip((p - 1) * ps).limit(ps).lean();
+        return res.status(200).json({ page: p, pageSize: ps, total, list });
+    } catch (e) {
+        console.error('tokens/logs 失败:', e);
         return res.status(500).json({ message: '服务器错误' });
     }
 });

@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Node: 启动 backend (src/app.js)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/app.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "runtimeExecutable": "node",
+      "envFile": "${workspaceFolder}/.env"
+    }
+  ]
+}

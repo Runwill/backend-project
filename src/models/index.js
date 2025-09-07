@@ -189,6 +189,25 @@ const TermFixed = mongoose.model('TermFixed', termFixedSchema);
 const Skill = mongoose.model('Skill', skillSchema);
 const AvatarChange = mongoose.model('AvatarChange', avatarChangeSchema);
 
+// 词元变更日志（统一存储，供客户端拉取）
+const tokenLogSchema = new mongoose.Schema({
+    type: { type: String, enum: ['create','update','delete-field','delete-doc','save-edits'], required: true },
+    collection: { type: String, required: true },
+    docId: { type: String, required: true },
+    path: { type: String },
+    value: { type: mongoose.Schema.Types.Mixed },
+    from: { type: mongoose.Schema.Types.Mixed },
+    doc: { type: mongoose.Schema.Types.Mixed }, // create 时的简要对象（只含 en/cn/name/id 等）
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    username: { type: String },
+    sourceId: { type: String },
+    createdAt: { type: Date, default: Date.now }
+});
+tokenLogSchema.index({ createdAt: 1 });
+tokenLogSchema.index({ collection: 1, docId: 1, createdAt: 1 });
+
+const TokenLog = mongoose.model('TokenLog', tokenLogSchema);
+
 module.exports = {
     User,
     Character,
@@ -197,4 +216,5 @@ module.exports = {
     TermFixed,
     Skill,
     AvatarChange
+    , TokenLog
 };
