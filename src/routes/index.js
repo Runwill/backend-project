@@ -585,6 +585,23 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
         if (valueType === 'number') casted = Number(value);
         if (valueType === 'boolean') casted = Boolean(value);
 
+        // 先取文档并计算旧值
+        const docBefore = await Model.findById(id);
+        if (!docBefore) return res.status(404).json({ message: '文档不存在' });
+        // 读取旧值（支持 a.b.0.c 路径）
+        const parts = String(dotPath).split('.');
+        let parent = docBefore;
+        for (let i = 0; i < parts.length - 1; i++) {
+            const k = parts[i];
+            const key = /^\d+$/.test(k) ? Number(k) : k;
+            parent = parent ? parent[key] : undefined;
+        }
+        const lastKeyRaw = parts[parts.length - 1];
+        const isIndex = /^\d+$/.test(lastKeyRaw);
+        const lastKey = isIndex ? Number(lastKeyRaw) : lastKeyRaw;
+        let prevValue;
+        try { prevValue = (parent && typeof parent === 'object') ? parent[lastKey] : undefined; } catch (_) { prevValue = undefined; }
+
         // 执行更新
         const update = { $set: { [dotPath]: casted } };
         const doc = await Model.findByIdAndUpdate(id, update, { new: true });
@@ -594,9 +611,11 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
             const sourceId = req.header('x-client-id') || '';
             const username = (req.user && req.user.username) || '';
             // Save to DB
-            await TokenLog.create({ type: 'update', collection, docId: String(id), path: dotPath, value: casted, username, sourceId });
+            // 简要 doc 信息，用于前端显示标签
+            const brief = (()=>{ try{ const d = docBefore.toObject ? docBefore.toObject() : docBefore; const o={}; if(d.en) o.en=d.en; if(d.cn) o.cn=d.cn; if(d.name) o.name=d.name; if(d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+            await TokenLog.create({ type: 'update', collection, docId: String(id), path: dotPath, value: casted, from: prevValue, doc: brief, username, sourceId });
             // SSE
-            sseBroadcast({ type: 'update', collection, id, path: dotPath, value: casted, sourceId });
+            sseBroadcast({ type: 'update', collection, id, path: dotPath, value: casted, from: prevValue, doc: brief, sourceId });
         } catch (_) { }
         return res.status(200).json({ message: '更新成功', doc });
     } catch (e) {
@@ -627,7 +646,7 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
 
-        const doc = await Model.findById(id);
+    const doc = await Model.findById(id);
         if (!doc) return res.status(404).json({ message: '文档不存在' });
 
         const parts = String(dotPath).split('.');
@@ -667,8 +686,9 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
         try {
             const sourceId = req.header('x-client-id') || '';
             const username = (req.user && req.user.username) || '';
-            await TokenLog.create({ type: 'delete-field', collection, docId: String(id), path: dotPath, from: prevValue, username, sourceId });
-            sseBroadcast({ type: 'delete-field', collection, id, path: dotPath, from: prevValue, sourceId });
+            const brief = (()=>{ try{ const d = doc.toObject ? doc.toObject() : doc; const o={}; if(d.en) o.en=d.en; if(d.cn) o.cn=d.cn; if(d.name) o.name=d.name; if(d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+            await TokenLog.create({ type: 'delete-field', collection, docId: String(id), path: dotPath, from: prevValue, doc: brief, username, sourceId });
+            sseBroadcast({ type: 'delete-field', collection, id, path: dotPath, from: prevValue, doc: brief, sourceId });
         } catch (_) { }
         return res.status(200).json({ message: '删除成功' });
     } catch (e) {
@@ -813,14 +833,15 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
         };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
-        const doc = await Model.findByIdAndDelete(id);
+    const doc = await Model.findByIdAndDelete(id);
         if (!doc) return res.status(404).json({ message: '文档不存在' });
         // Persist log + broadcast realtime event
         try {
             const sourceId = req.header('x-client-id') || '';
             const username = (req.user && req.user.username) || '';
-            await TokenLog.create({ type: 'delete-doc', collection, docId: String(id), username, sourceId });
-            sseBroadcast({ type: 'delete-doc', collection, id, sourceId });
+            const brief = (()=>{ try{ const d = doc && (doc.toObject ? doc.toObject() : doc); const o={}; if(d && d.en) o.en=d.en; if(d && d.cn) o.cn=d.cn; if(d && d.name) o.name=d.name; if(d && d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+            await TokenLog.create({ type: 'delete-doc', collection, docId: String(id), doc: brief, username, sourceId });
+            sseBroadcast({ type: 'delete-doc', collection, id, doc: brief, sourceId });
         } catch (_) { }
         return res.status(200).json({ message: '删除成功' });
     } catch (e) {
@@ -848,6 +869,33 @@ router.get('/tokens/logs', auth, async (req, res) => {
         return res.status(200).json({ page: p, pageSize: ps, total, list });
     } catch (e) {
         console.error('tokens/logs 失败:', e);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 获取文档简要（用于日志标签兜底）：返回 { en, cn, name, id }
+router.get('/tokens/brief', async (req, res) => {
+    try {
+        const { collection, id } = req.query || {};
+        if (!collection || !id) return res.status(400).json({ message: '缺少参数' });
+        const modelMap = {
+            'term-fixed': TermFixed,
+            'term-dynamic': TermDynamic,
+            'card': Card,
+            'character': Character,
+            'skill': Skill
+        };
+        const Model = modelMap[collection];
+        if (!Model) return res.status(400).json({ message: '未知集合' });
+        const doc = await Model.findById(id).lean();
+        if (!doc) return res.status(404).json({ message: '文档不存在' });
+        const brief = {};
+        if (doc.en) brief.en = doc.en;
+        if (doc.cn) brief.cn = doc.cn;
+        if (doc.name) brief.name = doc.name;
+        if (doc.id != null) brief.id = doc.id;
+        return res.status(200).json(brief);
+    } catch (e) {
         return res.status(500).json({ message: '服务器错误' });
     }
 });
