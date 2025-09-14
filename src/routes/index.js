@@ -873,6 +873,41 @@ router.get('/tokens/logs', auth, async (req, res) => {
     }
 });
 
+// 批量删除词元日志（仅管理员）：可选按筛选条件删除
+router.delete('/tokens/logs', auth, requireAdmin, async (req, res) => {
+    try {
+        const { since, until, collection, docId } = req.query || {};
+        const q = {};
+        if (since || until) {
+            q.createdAt = {};
+            if (since) q.createdAt.$gte = new Date(since);
+            if (until) q.createdAt.$lte = new Date(until);
+        }
+        if (collection) q.collection = String(collection);
+        if (docId) q.docId = String(docId);
+        const r = await TokenLog.deleteMany(q);
+        const deleted = (r && (r.deletedCount || r.n)) || 0;
+        return res.status(200).json({ message: '已清空', deleted });
+    } catch (e) {
+        console.error('批量删除日志失败:', e);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
+// 删除一条词元日志（仅管理员）
+router.delete('/tokens/logs/:id', auth, requireAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id) return res.status(400).json({ message: '缺少日志ID' });
+        const log = await TokenLog.findByIdAndDelete(id);
+        if (!log) return res.status(404).json({ message: '日志不存在' });
+        return res.status(200).json({ message: '删除成功' });
+    } catch (e) {
+        console.error('删除日志失败:', e);
+        return res.status(500).json({ message: '服务器错误' });
+    }
+});
+
 // 获取文档简要（用于日志标签兜底）：返回 { en, cn, name, id }
 router.get('/tokens/brief', async (req, res) => {
     try {
