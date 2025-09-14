@@ -114,7 +114,7 @@ const termFixedSchema = new mongoose.Schema({
         type: String,
         maxlength: 20
     },
-    replace_text: {
+    replace: {
         type: String,
         maxlength: 100
     },

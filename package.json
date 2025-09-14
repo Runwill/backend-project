@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "import-skills": "node importSkills.js"
+    "import-skills": "node importSkills.js",
+    "migrate:replace": "node scripts/migrate-term-fixed-replace.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

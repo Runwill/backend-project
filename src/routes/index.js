@@ -561,10 +561,12 @@ router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
 // 词元内联更新（仅管理员）
 router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     try {
-    const { collection, id, path: dotPath, value, valueType } = req.body || {};
-        if (!collection || !id || !dotPath) {
+    const { collection, id, path: dotPathRaw, value, valueType } = req.body || {};
+        if (!collection || !id || !dotPathRaw) {
             return res.status(400).json({ message: '参数无效' });
         }
+        // 直接使用入参路径
+        let dotPath = dotPathRaw;
         // 禁止更新危险字段
         if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
             return res.status(400).json({ message: '该字段不允许修改' });
@@ -628,10 +630,12 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
 // 词元内联删除（仅管理员）：删除对象字段或数组元素
 router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
     try {
-        const { collection, id, path: dotPath } = req.body || {};
-        if (!collection || !id || !dotPath) {
+        const { collection, id, path: dotPathRaw } = req.body || {};
+        if (!collection || !id || !dotPathRaw) {
             return res.status(400).json({ message: '参数无效' });
         }
+        // 直接使用入参路径
+        let dotPath = dotPathRaw;
         // 禁止删除危险字段
         if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
             return res.status(400).json({ message: '该字段不允许删除' });
@@ -673,15 +677,16 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
                 return res.status(400).json({ message: '数组下标越界' });
             }
             parent.splice(lastKey, 1);
+            try { doc.markModified(rootMark); } catch (_) {}
+            await doc.save();
         } else if (typeof parent === 'object') {
             if (!(lastKey in parent)) return res.status(400).json({ message: '字段不存在' });
-            delete parent[lastKey];
+            // 使用 $unset 确保持久化删除（适用于对象/嵌套对象字段）
+            await Model.updateOne({ _id: id }, { $unset: { [dotPath]: "" } });
         } else {
             return res.status(400).json({ message: '路径不是可删除的对象/数组' });
         }
 
-        try { doc.markModified(rootMark); } catch (_) {}
-        await doc.save();
         // Persist log + broadcast realtime event
         try {
             const sourceId = req.header('x-client-id') || '';
