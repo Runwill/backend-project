@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index'); // 正确引入所有模型
+const { attachPinyinToDocs } = require('../utils/pinyin');
 
 const router = express.Router();
 
@@ -277,7 +278,9 @@ router.post('/approve', auth, requireReviewer, async (req, res) => {
 
 router.get('/character', async (req, res) => {
     try {
-        const characters = await Character.find();
+    let characters = await Character.find().lean();
+        // 附带拼音（name -> py, py_abbr）
+        try { characters = await attachPinyinToDocs(characters, [{ key: 'name', outFull: 'py', outAbbr: 'py_abbr' }]); } catch(_) {}
         res.status(200).json(characters);
     } catch (error) {
         res.status(500).json({ message: '获取武将失败', error });
@@ -287,7 +290,9 @@ router.get('/character', async (req, res) => {
 // 获取所有基础牌
 router.get('/card', async (req, res) => {
     try {
-        const cards = await Card.find();
+    let cards = await Card.find().lean();
+        // 附带拼音（cn -> py, py_abbr）
+        try { cards = await attachPinyinToDocs(cards, [{ key: 'cn', outFull: 'py', outAbbr: 'py_abbr' }]); } catch(_) {}
         res.status(200).json(cards);
     } catch (error) {
         res.status(500).json({ message: '获取基础牌失败', error });
@@ -308,7 +313,12 @@ router.get('/term-dynamic', async (req, res) => {
 // 获取所有静态术语
 router.get('/term-fixed', async (req, res) => {
     try {
-        const terms = await TermFixed.find();
+    let terms = await TermFixed.find().lean();
+        // 附带拼音（cn -> py, py_abbr）
+        try {
+            terms = await attachPinyinToDocs(terms, [{ key: 'cn', outFull: 'py', outAbbr: 'py_abbr' }]);
+        } catch(_) {}
+        try { console.log('[term-fixed] sample after attach:', terms && terms[0] && { cn: terms[0].cn, py: terms[0].py, py_abbr: terms[0].py_abbr }); } catch(_){}
         res.status(200).json(terms);
     } catch (error) {
         res.status(500).json({ message: '获取静态术语失败', error });
@@ -318,7 +328,8 @@ router.get('/term-fixed', async (req, res) => {
 // 获取强度0的技能
 router.get('/skill0', async (req, res) => {
     try {
-        const skills = await Skill.find({ strength: 0 });
+    let skills = await Skill.find({ strength: 0 }).lean();
+        try { skills = await attachPinyinToDocs(skills, [{ key: 'name', outFull: 'py', outAbbr: 'py_abbr' }]); } catch(_) {}
         res.status(200).json(skills);
     } catch (error) {
         res.status(500).json({ message: '获取强度0技能失败', error });
@@ -328,7 +339,8 @@ router.get('/skill0', async (req, res) => {
 // 获取强度1的技能
 router.get('/skill1', async (req, res) => {
     try {
-        const skills = await Skill.find({ strength: 1 });
+    let skills = await Skill.find({ strength: 1 }).lean();
+        try { skills = await attachPinyinToDocs(skills, [{ key: 'name', outFull: 'py', outAbbr: 'py_abbr' }]); } catch(_) {}
         res.status(200).json(skills);
     } catch (error) {
         res.status(500).json({ message: '获取强度1技能失败', error });
@@ -338,7 +350,8 @@ router.get('/skill1', async (req, res) => {
 // 获取强度2的技能
 router.get('/skill2', async (req, res) => {
     try {
-        const skills = await Skill.find({ strength: 2 });
+    let skills = await Skill.find({ strength: 2 }).lean();
+        try { skills = await attachPinyinToDocs(skills, [{ key: 'name', outFull: 'py', outAbbr: 'py_abbr' }]); } catch(_) {}
         res.status(200).json(skills);
     } catch (error) {
         res.status(500).json({ message: '获取强度2技能失败', error });
