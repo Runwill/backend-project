@@ -65,7 +65,7 @@ function runPythonPinyin(texts, timeoutMs = 5000) {
 }
 
 async function attachPinyinToDocs(docs, pickers) {
-  // pickers: array of { key: 'cn', outFull: 'py', outAbbr: 'py_abbr' }
+  // pickers: array of { key: 'cn', outFull: 'py' }
   if (!Array.isArray(docs) || docs.length === 0) return docs;
   const keys = Array.isArray(pickers) ? pickers : [];
   if (!keys.length) return docs;
@@ -89,12 +89,94 @@ async function attachPinyinToDocs(docs, pickers) {
     const doc = docs[docIdx];
     if (!doc) return;
     if (pk.outFull) doc[pk.outFull] = r && r.full || '';
-    if (pk.outAbbr) doc[pk.outAbbr] = r && r.abbr || '';
   });
   if (process.env.DEBUG_PINYIN) {
-    try { console.log('[pinyin] attach done, sample:', docs && docs[0] && { py: docs[0].py, py_abbr: docs[0].py_abbr }); } catch(_){ }
+    try { console.log('[pinyin] attach done, sample:', docs && docs[0] && { py: docs[0].py }); } catch(_){ }
   }
   return docs;
 }
 
 module.exports = { runPythonPinyin, attachPinyinToDocs };
+/**
+ * 收集一个文档内的文本，覆盖嵌套字段
+ * 默认收集字段：cn/name/title/replace/content/lore/legend
+ */
+function collectTextsFromDoc(doc, opts = {}) {
+  const limit = Number.isFinite(opts.maxDepth) ? opts.maxDepth : 6;
+  const filterKeys = Array.isArray(opts.keys) && opts.keys.length ? new Set(opts.keys) : null;
+  // 默认排除 _id/__v 以及英文键 en 和颜色 color
+  const hideKeys = new Set(opts.hideKeys || ['_id', '__v', 'en', 'color']);
+  const out = [];
+
+  const walk = (v, depth = 0, pathStr = '', keyName = '') => {
+    if (depth > limit || v == null) return;
+    const t = typeof v;
+    if (t === 'string') {
+      if (!filterKeys) {
+        // 缺省：收集所有字符串属性
+        if (v.trim()) out.push(v);
+      } else {
+        // 如有 keys，则仅在键名或路径匹配时收集
+        if ((keyName && filterKeys.has(keyName)) || (pathStr && filterKeys.has(pathStr))) {
+          if (v.trim()) out.push(v);
+        }
+      }
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) {
+        const childPath = pathStr ? `${pathStr}.${i}` : String(i);
+        walk(v[i], depth + 1, childPath, keyName);
+      }
+      return;
+    }
+    if (t === 'object') {
+      for (const k of Object.keys(v)) {
+        if (hideKeys.has(k)) continue;
+        const val = v[k];
+        const childPath = pathStr ? `${pathStr}.${k}` : k;
+        walk(val, depth + 1, childPath, k);
+      }
+    }
+  };
+  walk(doc, 0, '', '');
+  return out;
+}
+
+/**
+ * 为每个文档聚合多字段拼音，生成 py 字段（原 _py 重命名为 py）
+ */
+async function attachAggregatePinyin(docs, opts = {}) {
+  if (!Array.isArray(docs) || docs.length === 0) return docs;
+  const allTexts = [];
+  const idx = [];
+  const perDocTexts = docs.map(d => collectTextsFromDoc(d, opts));
+  perDocTexts.forEach((arr, di) => {
+    (arr || []).forEach(t => { allTexts.push(t || ''); idx.push(di); });
+  });
+  if (allTexts.length === 0) {
+    return docs;
+  }
+  const conv = await runPythonPinyin(allTexts);
+  const agg = new Array(docs.length).fill(null).map(() => ({ fulls: [] }));
+  conv.forEach((r, i) => {
+    const di = idx[i];
+    if (di == null || di < 0) return;
+    const bucket = agg[di];
+    if (!bucket) return;
+    const full = r && r.full ? String(r.full) : '';
+    if (full) bucket.fulls.push(full);
+  });
+  agg.forEach((b, di) => {
+    const d = docs[di];
+    if (!d || !b) return;
+    d.py = b.fulls.join(' ');
+  });
+  if (process.env.DEBUG_PINYIN) {
+    try { console.log('[pinyin] aggregate done, sample:', docs && docs[0] && { py: docs[0].py }); } catch(_){ }
+  }
+  return docs;
+}
+
+module.exports.attachAggregatePinyin = attachAggregatePinyin;
+module.exports.collectTextsFromDoc = collectTextsFromDoc;
