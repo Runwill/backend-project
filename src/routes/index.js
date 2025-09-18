@@ -324,38 +324,30 @@ router.get('/term-fixed', async (req, res) => {
 });
 
 // 获取强度0的技能
-router.get('/skill0', async (req, res) => {
-    try {
-    let skills = await Skill.find({ strength: 0 }).lean();
-    // 仅生成聚合拼音 py（原 _py）
+// 统一技能获取逻辑（支持按 strength 过滤）
+async function fetchSkillsByStrength(strength) {
+    const q = (strength === undefined || strength === null) ? {} : { strength };
+    let skills = await Skill.find(q).lean();
     try { skills = await attachAggregatePinyin(skills); } catch(_) {}
-        res.status(200).json(skills);
-    } catch (error) {
-        res.status(500).json({ message: '获取强度0技能失败', error });
-    }
-});
+    return skills;
+}
 
-// 获取强度1的技能
-router.get('/skill1', async (req, res) => {
+// 新统一路由：GET /skill  (可选 query: strength=0|1|2)
+router.get('/skill', async (req, res) => {
     try {
-    let skills = await Skill.find({ strength: 1 }).lean();
-    // 仅生成聚合拼音 py（原 _py）
-    try { skills = await attachAggregatePinyin(skills); } catch(_) {}
-        res.status(200).json(skills);
+        let { strength } = req.query;
+        if (strength !== undefined) {
+            strength = Number(strength);
+            if (![0,1,2].includes(strength)) {
+                return res.status(400).json({ message: 'strength 参数无效，应为 0/1/2' });
+            }
+        } else {
+            strength = undefined;
+        }
+        const skills = await fetchSkillsByStrength(strength);
+        return res.status(200).json(skills);
     } catch (error) {
-        res.status(500).json({ message: '获取强度1技能失败', error });
-    }
-});
-
-// 获取强度2的技能
-router.get('/skill2', async (req, res) => {
-    try {
-    let skills = await Skill.find({ strength: 2 }).lean();
-    // 仅生成聚合拼音 py（原 _py）
-    try { skills = await attachAggregatePinyin(skills); } catch(_) {}
-        res.status(200).json(skills);
-    } catch (error) {
-        res.status(500).json({ message: '获取强度2技能失败', error });
+        return res.status(500).json({ message: '获取技能失败', error });
     }
 });
 
