@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index'); // 正确引入所有模型
 const { attachAggregatePinyin } = require('../utils/pinyin');
+const { listWithPinyin } = require('../services/listWithPinyin');
 
 // 统一的集合到模型映射（供 tokens 路由等处复用）
 const modelMap = {
@@ -281,9 +282,7 @@ router.post('/approve', auth, requireReviewer, async (req, res) => {
 
 router.get('/character', async (req, res) => {
     try {
-    let characters = await Character.find().lean();
-    // 仅生成聚合拼音 py（原 _py）
-    try { characters = await attachAggregatePinyin(characters); } catch(_) {}
+        const characters = await listWithPinyin(Character);
         res.status(200).json(characters);
     } catch (error) {
         res.status(500).json({ message: '获取武将失败', error });
@@ -293,9 +292,7 @@ router.get('/character', async (req, res) => {
 // 获取所有基础牌
 router.get('/card', async (req, res) => {
     try {
-    let cards = await Card.find().lean();
-    // 仅生成聚合拼音 py（原 _py）
-    try { cards = await attachAggregatePinyin(cards); } catch(_) {}
+        const cards = await listWithPinyin(Card);
         res.status(200).json(cards);
     } catch (error) {
         res.status(500).json({ message: '获取基础牌失败', error });
@@ -306,8 +303,7 @@ router.get('/card', async (req, res) => {
 // 获取所有动态术语
 router.get('/term-dynamic', async (req, res) => {
     try {
-        let terms = await TermDynamic.find().lean();
-    try { terms = await attachAggregatePinyin(terms); } catch(_) {}
+        const terms = await listWithPinyin(TermDynamic);
         res.status(200).json(terms);
     } catch (error) {
         res.status(500).json({ message: '获取动态术语失败', error });
@@ -317,37 +313,26 @@ router.get('/term-dynamic', async (req, res) => {
 // 获取所有静态术语
 router.get('/term-fixed', async (req, res) => {
     try {
-    let terms = await TermFixed.find().lean();
-    // 仅生成聚合拼音 py（原 _py）
-    try { terms = await attachAggregatePinyin(terms); } catch(_) {}
+        const terms = await listWithPinyin(TermFixed);
         res.status(200).json(terms);
     } catch (error) {
         res.status(500).json({ message: '获取静态术语失败', error });
     }
 });
 
-// 获取强度0的技能
-// 统一技能获取逻辑（支持按 strength 过滤）
-async function fetchSkillsByStrength(strength) {
-    const q = (strength === undefined || strength === null) ? {} : { strength };
-    let skills = await Skill.find(q).lean();
-    try { skills = await attachAggregatePinyin(skills); } catch(_) {}
-    return skills;
-}
-
 // 新统一路由：GET /skill  (可选 query: strength=0|1|2)
 router.get('/skill', async (req, res) => {
     try {
         let { strength } = req.query;
+        let query = {};
         if (strength !== undefined) {
-            strength = Number(strength);
-            if (![0,1,2].includes(strength)) {
+            const n = Number(strength);
+            if (![0, 1, 2].includes(n)) {
                 return res.status(400).json({ message: 'strength 参数无效，应为 0/1/2' });
             }
-        } else {
-            strength = undefined;
+            query.strength = n;
         }
-        const skills = await fetchSkillsByStrength(strength);
+        const skills = await listWithPinyin(Skill, { query });
         return res.status(200).json(skills);
     } catch (error) {
         return res.status(500).json({ message: '获取技能失败', error });
@@ -358,7 +343,8 @@ router.get('/skill', async (req, res) => {
 router.get('/skill/:name', async (req, res) => {
     try {
         const { name } = req.params;
-        const skills = await Skill.find({ name }).sort({ strength: 1 });
+        // 保持现状：不生成 py，仅按 strength 升序
+        const skills = await Skill.find({ name }).sort({ strength: 1 }).lean();
         res.status(200).json(skills);
     } catch (error) {
         res.status(500).json({ message: '获取技能失败', error });
