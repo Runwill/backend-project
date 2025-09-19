@@ -7,6 +7,15 @@ const fs = require('fs');
 const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index'); // 正确引入所有模型
 const { attachAggregatePinyin } = require('../utils/pinyin');
 
+// 统一的集合到模型映射（供 tokens 路由等处复用）
+const modelMap = {
+    'term-fixed': TermFixed,
+    'term-dynamic': TermDynamic,
+    'card': Card,
+    'character': Character,
+    'skill': Skill
+};
+
 const router = express.Router();
 
 // Realtime SSE removed; keep a no-op broadcaster for compatibility
@@ -75,31 +84,25 @@ function auth(req, res, next) {
     }
 }
 
-// 读取数据库中的用户并校验角色（moderator 或 admin 可审核）
-async function requireReviewer(req, res, next) {
-    try {
-        if (!req.user?.id) return res.status(401).json({ message: '未授权' });
-        const u = await User.findById(req.user.id);
-        if (!u) return res.status(401).json({ message: '未授权' });
-        if (u.role === 'admin' || u.role === 'moderator') return next();
-        return res.status(403).json({ message: '无权限' });
-    } catch (e) {
-        return res.status(500).json({ message: '服务器错误' });
-    }
+// 基于角色的通用鉴权工厂
+function requireRole(allowedRoles) {
+    const set = new Set(allowedRoles || []);
+    return async function (req, res, next) {
+        try {
+            if (!req.user?.id) return res.status(401).json({ message: '未授权' });
+            const u = await User.findById(req.user.id);
+            if (!u) return res.status(401).json({ message: '未授权' });
+            if (set.has(u.role)) return next();
+            return res.status(403).json({ message: '无权限' });
+        } catch (e) {
+            return res.status(500).json({ message: '服务器错误' });
+        }
+    };
 }
 
-// 仅管理员
-async function requireAdmin(req, res, next) {
-    try {
-        if (!req.user?.id) return res.status(401).json({ message: '未授权' });
-        const u = await User.findById(req.user.id);
-        if (!u) return res.status(401).json({ message: '未授权' });
-        if (u.role === 'admin') return next();
-        return res.status(403).json({ message: '无权限' });
-    } catch (e) {
-        return res.status(500).json({ message: '服务器错误' });
-    }
-}
+// 角色别名中间件（兼容原有命名）
+const requireReviewer = requireRole(['admin', 'moderator']);
+const requireAdmin = requireRole(['admin']);
 
 // 登录方法
 router.post('/login', async (req, res) => {
@@ -577,14 +580,6 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
         if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
             return res.status(400).json({ message: '该字段不允许修改' });
         }
-        // 映射集合到模型
-        const modelMap = {
-            'term-fixed': TermFixed,
-            'term-dynamic': TermDynamic,
-            'card': Card,
-            'character': Character,
-            'skill': Skill
-        };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
 
@@ -646,13 +641,6 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
         if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
             return res.status(400).json({ message: '该字段不允许删除' });
         }
-        const modelMap = {
-            'term-fixed': TermFixed,
-            'term-dynamic': TermDynamic,
-            'card': Card,
-            'character': Character,
-            'skill': Skill
-        };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
 
@@ -713,13 +701,6 @@ router.get('/tokens/shape', auth, requireAdmin, async (req, res) => {
     try {
         const collection = req.query.collection;
         if (!collection) return res.status(400).json({ message: '缺少 collection' });
-        const modelMap = {
-            'term-fixed': TermFixed,
-            'term-dynamic': TermDynamic,
-            'card': Card,
-            'character': Character,
-            'skill': Skill
-        };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
 
@@ -796,13 +777,6 @@ router.post('/tokens/create', auth, requireAdmin, async (req, res) => {
         if (!collection || !data || typeof data !== 'object') {
             return res.status(400).json({ message: '参数无效' });
         }
-        const modelMap = {
-            'term-fixed': TermFixed,
-            'term-dynamic': TermDynamic,
-            'card': Card,
-            'character': Character,
-            'skill': Skill
-        };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
         const doc = new Model(data);
@@ -835,13 +809,6 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
     try {
         const { collection, id } = req.body || {};
         if (!collection || !id) return res.status(400).json({ message: '参数无效' });
-        const modelMap = {
-            'term-fixed': TermFixed,
-            'term-dynamic': TermDynamic,
-            'card': Card,
-            'character': Character,
-            'skill': Skill
-        };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
     const doc = await Model.findByIdAndDelete(id);
@@ -924,13 +891,6 @@ router.get('/tokens/brief', async (req, res) => {
     try {
         const { collection, id } = req.query || {};
         if (!collection || !id) return res.status(400).json({ message: '缺少参数' });
-        const modelMap = {
-            'term-fixed': TermFixed,
-            'term-dynamic': TermDynamic,
-            'card': Card,
-            'character': Character,
-            'skill': Skill
-        };
         const Model = modelMap[collection];
         if (!Model) return res.status(400).json({ message: '未知集合' });
         const doc = await Model.findById(id).lean();
