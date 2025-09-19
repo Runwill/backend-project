@@ -18,6 +18,21 @@ const modelMap = {
 
 const router = express.Router();
 
+// 统一的 brief 构造函数（用于日志与简要查询）
+function pickBrief(docLike) {
+  try {
+    const d = docLike && (typeof docLike.toObject === 'function' ? docLike.toObject() : docLike);
+    const o = {};
+    if (d && d.en) o.en = d.en;
+    if (d && d.cn) o.cn = d.cn;
+    if (d && d.name) o.name = d.name;
+    if (d && d.id != null) o.id = d.id;
+    return o;
+  } catch (_) {
+    return {};
+  }
+}
+
 // Realtime SSE removed; keep a no-op broadcaster for compatibility
 function sseBroadcast(_) { /* no-op */ }
 
@@ -532,24 +547,19 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     if (!collection || !id || !dotPathRaw) {
       return res.status(400).json({ message: '参数无效' });
     }
-    // 直接使用入参路径
     let dotPath = dotPathRaw;
-    // 禁止更新危险字段
     if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
       return res.status(400).json({ message: '该字段不允许修改' });
     }
     const Model = modelMap[collection];
     if (!Model) return res.status(400).json({ message: '未知集合' });
 
-    // 类型转换（与前端一致）
     let casted = value;
     if (valueType === 'number') casted = Number(value);
     if (valueType === 'boolean') casted = Boolean(value);
 
-    // 先取文档并计算旧值
     const docBefore = await Model.findById(id);
     if (!docBefore) return res.status(404).json({ message: '文档不存在' });
-    // 读取旧值（支持 a.b.0.c 路径）
     const parts = String(dotPath).split('.');
     let parent = docBefore;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -563,25 +573,19 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     let prevValue;
     try { prevValue = (parent && typeof parent === 'object') ? parent[lastKey] : undefined; } catch (_) { prevValue = undefined; }
 
-    // 执行更新
     const update = { $set: { [dotPath]: casted } };
     const doc = await Model.findByIdAndUpdate(id, update, { new: true });
     if (!doc) return res.status(404).json({ message: '文档不存在' });
-    // Persist log + broadcast realtime event
     try {
       const sourceId = req.header('x-client-id') || '';
       const username = (req.user && req.user.username) || '';
-      // Save to DB
-      // 简要 doc 信息，用于前端显示标签
-      const brief = (()=>{ try{ const d = docBefore.toObject ? docBefore.toObject() : docBefore; const o={}; if(d.en) o.en=d.en; if(d.cn) o.cn=d.cn; if(d.name) o.name=d.name; if(d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+      const brief = pickBrief(docBefore);
       await TokenLog.create({ type: 'update', collection, docId: String(id), path: dotPath, value: casted, from: prevValue, doc: brief, username, sourceId });
-      // SSE
       sseBroadcast({ type: 'update', collection, id, path: dotPath, value: casted, from: prevValue, doc: brief, sourceId });
     } catch (_) { }
     return res.status(200).json({ message: '更新成功', doc });
   } catch (e) {
     console.error('tokens/update 失败:', e);
-    // 可能是路径错误或类型校验失败
     return res.status(500).json({ message: '服务器错误' });
   }
 });
@@ -593,9 +597,7 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
     if (!collection || !id || !dotPathRaw) {
       return res.status(400).json({ message: '参数无效' });
     }
-    // 直接使用入参路径
     let dotPath = dotPathRaw;
-    // 禁止删除危险字段
     if (dotPath.startsWith('_') || dotPath.includes('.__v') || dotPath === '__v') {
       return res.status(400).json({ message: '该字段不允许删除' });
     }
@@ -608,7 +610,6 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
     const parts = String(dotPath).split('.');
     const rootMark = parts[0];
     let parent = doc;
-    // 走到倒数第二段
     for (let i = 0; i < parts.length - 1; i++) {
       const k = parts[i];
       const key = /^\d+$/.test(k) ? Number(k) : k;
@@ -620,7 +621,6 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
     const lastKey = isIndex ? Number(lastKeyRaw) : lastKeyRaw;
     if (parent == null) return res.status(400).json({ message: '路径不存在' });
 
-    // Snapshot previous value
     let prevValue;
     try { prevValue = Array.isArray(parent) && isIndex ? parent[lastKey] : (typeof parent === 'object' ? parent[lastKey] : undefined); } catch (_) { prevValue = undefined; }
 
@@ -633,17 +633,15 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
       await doc.save();
     } else if (typeof parent === 'object') {
       if (!(lastKey in parent)) return res.status(400).json({ message: '字段不存在' });
-      // 使用 $unset 确保持久化删除（适用于对象/嵌套对象字段）
       await Model.updateOne({ _id: id }, { $unset: { [dotPath]: "" } });
     } else {
       return res.status(400).json({ message: '路径不是可删除的对象/数组' });
     }
 
-    // Persist log + broadcast realtime event
     try {
       const sourceId = req.header('x-client-id') || '';
       const username = (req.user && req.user.username) || '';
-      const brief = (()=>{ try{ const d = doc.toObject ? doc.toObject() : doc; const o={}; if(d.en) o.en=d.en; if(d.cn) o.cn=d.cn; if(d.name) o.name=d.name; if(d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+      const brief = pickBrief(doc);
       await TokenLog.create({ type: 'delete-field', collection, docId: String(id), path: dotPath, from: prevValue, doc: brief, username, sourceId });
       sseBroadcast({ type: 'delete-field', collection, id, path: dotPath, from: prevValue, doc: brief, sourceId });
     } catch (_) { }
@@ -684,7 +682,7 @@ router.get('/tokens/shape', auth, requireAdmin, async (req, res) => {
         const sub = [];
         for (const [sp, sd] of Object.entries(desc.schema.paths)) {
           if (sp === '_id') continue; // 子文档默认 _id
-          sub.push({ name: sp, type: sd.instance || 'Mixed', required: !!(sd.options && sd.options.required) });
+          sub.push({ name: sp + '[]', type: 'Subdocument[]', fields: sub });
         }
         fields.push({ name: path + '[]', type: 'Subdocument[]', fields: sub });
       }
@@ -739,12 +737,10 @@ router.post('/tokens/create', auth, requireAdmin, async (req, res) => {
     if (!Model) return res.status(400).json({ message: '未知集合' });
     const doc = new Model(data);
     await doc.save();
-    // Persist log + broadcast realtime event
     try {
       const sourceId = req.header('x-client-id') || '';
       const username = (req.user && req.user.username) || '';
-      // Pick brief
-      const brief = (()=>{ try{ const d = doc.toObject ? doc.toObject() : doc; const o={}; if(d.en) o.en=d.en; if(d.cn) o.cn=d.cn; if(d.name) o.name=d.name; if(d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+      const brief = pickBrief(doc);
       await TokenLog.create({ type: 'create', collection, docId: String(doc._id), doc: brief, username, sourceId });
       sseBroadcast({ type: 'create', collection, id: doc._id, doc: brief, sourceId });
     } catch (_) { }
@@ -754,7 +750,6 @@ router.post('/tokens/create', auth, requireAdmin, async (req, res) => {
     if (e && e.code === 11000) {
       return res.status(400).json({ message: '唯一索引冲突（例如重复的唯一字段）' });
     }
-    // mongoose 验证错误
     if (e && e.name === 'ValidationError') {
       return res.status(400).json({ message: e.message });
     }
@@ -771,11 +766,10 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
     if (!Model) return res.status(400).json({ message: '未知集合' });
     const doc = await Model.findByIdAndDelete(id);
     if (!doc) return res.status(404).json({ message: '文档不存在' });
-    // Persist log + broadcast realtime event
     try {
       const sourceId = req.header('x-client-id') || '';
       const username = (req.user && req.user.username) || '';
-      const brief = (()=>{ try{ const d = doc && (doc.toObject ? doc.toObject() : doc); const o={}; if(d && d.en) o.en=d.en; if(d && d.cn) o.cn=d.cn; if(d && d.name) o.name=d.name; if(d && d.id!=null) o.id=d.id; return o; }catch(_){ return {}; }})();
+      const brief = pickBrief(doc);
       await TokenLog.create({ type: 'delete-doc', collection, docId: String(id), doc: brief, username, sourceId });
       sseBroadcast({ type: 'delete-doc', collection, id, doc: brief, sourceId });
     } catch (_) { }
@@ -853,11 +847,7 @@ router.get('/tokens/brief', async (req, res) => {
         if (!Model) return res.status(400).json({ message: '未知集合' });
         const doc = await Model.findById(id).lean();
         if (!doc) return res.status(404).json({ message: '文档不存在' });
-        const brief = {};
-        if (doc.en) brief.en = doc.en;
-        if (doc.cn) brief.cn = doc.cn;
-        if (doc.name) brief.name = doc.name;
-        if (doc.id != null) brief.id = doc.id;
+        const brief = pickBrief(doc);
         return res.status(200).json(brief);
     } catch (e) {
         return res.status(500).json({ message: '服务器错误' });
