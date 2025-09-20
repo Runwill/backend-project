@@ -14,7 +14,5 @@
     "secret": "your_jwt_secret",
     "expiresIn": "1h"
   },
-  "api": {
-    "baseUrl": "http://localhost:3000/api"
-  }
+  "api": {}
 }
