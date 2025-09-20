@@ -64,39 +64,7 @@ function runPythonPinyin(texts, timeoutMs = 5000) {
   });
 }
 
-async function attachPinyinToDocs(docs, pickers) {
-  // pickers: array of { key: 'cn', outFull: 'py' }
-  if (!Array.isArray(docs) || docs.length === 0) return docs;
-  const keys = Array.isArray(pickers) ? pickers : [];
-  if (!keys.length) return docs;
-  if (process.env.DEBUG_PINYIN) {
-    try { console.log('[pinyin] attach start, docs:', docs.length, 'keys:', keys.map(k=>k.key).join(',')); } catch(_){ }
-  }
-  const texts = [];
-  const idxMap = [];
-  docs.forEach((doc, docIdx) => {
-    keys.forEach((pk, kIdx) => {
-      const val = doc && pk.key ? doc[pk.key] : '';
-      texts.push(val || '');
-      idxMap.push([docIdx, kIdx]);
-    });
-  });
-  const res = await runPythonPinyin(texts);
-  res.forEach((r, i) => {
-    const [docIdx, kIdx] = idxMap[i] || [];
-    const pk = keys[kIdx];
-    if (!pk) return;
-    const doc = docs[docIdx];
-    if (!doc) return;
-    if (pk.outFull) doc[pk.outFull] = r && r.full || '';
-  });
-  if (process.env.DEBUG_PINYIN) {
-    try { console.log('[pinyin] attach done, sample:', docs && docs[0] && { py: docs[0].py }); } catch(_){ }
-  }
-  return docs;
-}
-
-module.exports = { runPythonPinyin, attachPinyinToDocs };
+// 导出统一放在文件末尾，避免分散风格 & 未定义引用
 /**
  * 收集一个文档内的文本，覆盖嵌套字段
  * 默认收集字段：cn/name/title/replace/content/lore/legend
@@ -178,5 +146,8 @@ async function attachAggregatePinyin(docs, opts = {}) {
   return docs;
 }
 
-module.exports.attachAggregatePinyin = attachAggregatePinyin;
-module.exports.collectTextsFromDoc = collectTextsFromDoc;
+module.exports = {
+  runPythonPinyin,
+  attachAggregatePinyin,
+  collectTextsFromDoc
+};

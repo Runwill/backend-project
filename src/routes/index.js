@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index');
 const { listWithPinyin } = require('../services/listWithPinyin');
+const { asyncHandler } = require('../utils/asyncHandler');
 
 // 统一的集合到模型映射（供 tokens 路由等复用）
 const modelMap = {
@@ -245,16 +246,11 @@ router.put('/update', async (req, res) => {
 });
 
 
-router.get('/pending-users', auth, requireReviewer, async (req, res) => {
-    try {
-        // 查找所有未激活的用户
-        const pendingUsers = await User.find({ isActive: false });
-        res.status(200).json(pendingUsers || []);
-    } catch (error) {
-        console.error('获取未激活用户失败:', error);
-        res.status(500).json({ message: '服务器错误' });
-    }
-});
+router.get('/pending-users', auth, requireReviewer, asyncHandler(async (req, res) => {
+  // 查找所有未激活的用户
+  const pendingUsers = await User.find({ isActive: false });
+  res.status(200).json(pendingUsers || []);
+}, { logLabel: 'GET /pending-users' }));
 
 router.post('/approve', auth, requireReviewer, async (req, res) => {
     const { userId, action } = req.body; // action: 'approve' 或 'reject'
@@ -306,7 +302,8 @@ function registerListRoute(pathname, Model, errorMessage, buildQuery) {
       const list = await listWithPinyin(Model, opts);
       res.status(200).json(list);
     } catch (error) {
-      res.status(500).json({ message: errorMessage, error });
+      const status = (error && Number.isInteger(error.status) && error.status >= 400 && error.status < 500) ? error.status : 500;
+      res.status(status).json({ message: errorMessage, error: (error && error.message) || String(error) });
     }
   });
 }
@@ -329,16 +326,12 @@ registerListRoute('/skill', Skill, '获取技能失败', (req) => {
 });
 
 // 根据技能名获取所有强度版本（保留原逻辑）
-router.get('/skill/:name', async (req, res) => {
-  try {
-    const { name } = req.params;
-    // 保持现状：不生成 py，仅按 strength 升序
-    const skills = await Skill.find({ name }).sort({ strength: 1 }).lean();
-    res.status(200).json(skills);
-  } catch (error) {
-    res.status(500).json({ message: '获取技能失败', error });
-  }
-});
+router.get('/skill/:name', asyncHandler(async (req, res) => {
+  const { name } = req.params;
+  // 保持现状：不生成 py，仅按 strength 升序
+  const skills = await Skill.find({ name }).sort({ strength: 1 }).lean();
+  res.status(200).json(skills);
+}, { logLabel: 'GET /skill/:name' }));
 
 // 批量导入技能（保留原逻辑）
 router.post('/skill/import', async (req, res) => {
@@ -405,25 +398,20 @@ router.post('/skill/import', async (req, res) => {
 module.exports = router;
 
 // 获取用户信息（用于刷新头像等）
-router.get('/user/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!id) return res.status(400).json({ message: '缺少用户ID' });
-    const user = await User.findById(id);
-    if (!user) return res.status(404).json({ message: '用户不存在' });
-    return res.status(200).json({
-      id: user._id,
-      username: user.username,
-      role: user.role,
-      avatar: user.avatar || '',
-      isActive: !!user.isActive,
-      createdAt: user.createdAt
-    });
-  } catch (error) {
-    console.error('获取用户信息失败:', error);
-    res.status(500).json({ message: '服务器错误' });
-  }
-});
+router.get('/user/:id', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ message: '缺少用户ID' });
+  const user = await User.findById(id);
+  if (!user) return res.status(404).json({ message: '用户不存在' });
+  return res.status(200).json({
+    id: user._id,
+    username: user.username,
+    role: user.role,
+    avatar: user.avatar || '',
+    isActive: !!user.isActive,
+    createdAt: user.createdAt
+  });
+}, { logLabel: 'GET /user/:id' }));
 
 // 上传头像-提交审核（不直接生效）
 router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
@@ -469,28 +457,18 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
 });
 
 // 获取待审核头像列表（管理员）
-router.get('/avatar/pending', auth, requireReviewer, async (req, res) => {
-  try {
-    const list = await AvatarChange.find({ status: 'pending' }).populate('user', 'username role');
-    res.status(200).json(list || []);
-  } catch (error) {
-    console.error('获取待审核头像失败:', error);
-    res.status(500).json({ message: '服务器错误' });
-  }
-});
+router.get('/avatar/pending', auth, requireReviewer, asyncHandler(async (req, res) => {
+  const list = await AvatarChange.find({ status: 'pending' }).populate('user', 'username role');
+  res.status(200).json(list || []);
+}, { logLabel: 'GET /avatar/pending' }));
 
 // 获取当前用户的待审核头像（用于个人查看）
-router.get('/avatar/pending/me', async (req, res) => {
-  try {
-    const userId = req.query.userId;
-    if (!userId) return res.status(400).json({ message: '缺少用户ID' });
-    const record = await AvatarChange.findOne({ user: userId, status: 'pending' });
-    return res.status(200).json(record || null);
-  } catch (error) {
-    console.error('获取个人待审核头像失败:', error);
-    res.status(500).json({ message: '服务器错误' });
-  }
-});
+router.get('/avatar/pending/me', asyncHandler(async (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  const record = await AvatarChange.findOne({ user: userId, status: 'pending' });
+  return res.status(200).json(record || null);
+}, { logLabel: 'GET /avatar/pending/me' }));
 
 // 审核头像（管理员）：approve 或 reject
 router.post('/avatar/approve', auth, requireReviewer, async (req, res) => {
@@ -781,27 +759,22 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
 });
 
 // 统一存储日志：分页拉取（默认最近，按时间逆序）
-router.get('/tokens/logs', auth, async (req, res) => {
-  try {
-    const { page = 1, pageSize = 100, since, until, collection, docId } = req.query;
-    const p = Math.max(1, parseInt(page, 10) || 1);
-    const ps = Math.min(500, Math.max(1, parseInt(pageSize, 10) || 100));
-    const q = {};
-    if (since || until) {
-      q.createdAt = {};
-      if (since) q.createdAt.$gte = new Date(since);
-      if (until) q.createdAt.$lte = new Date(until);
-    }
-    if (collection) q.collection = String(collection);
-    if (docId) q.docId = String(docId);
-    const total = await TokenLog.countDocuments(q);
-    const list = await TokenLog.find(q).sort({ createdAt: -1 }).skip((p - 1) * ps).limit(ps).lean();
-    return res.status(200).json({ page: p, pageSize: ps, total, list });
-  } catch (e) {
-    console.error('tokens/logs 失败:', e);
-    return res.status(500).json({ message: '服务器错误' });
+router.get('/tokens/logs', auth, asyncHandler(async (req, res) => {
+  const { page = 1, pageSize = 100, since, until, collection, docId } = req.query;
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const ps = Math.min(500, Math.max(1, parseInt(pageSize, 10) || 100));
+  const q = {};
+  if (since || until) {
+    q.createdAt = {};
+    if (since) q.createdAt.$gte = new Date(since);
+    if (until) q.createdAt.$lte = new Date(until);
   }
-});
+  if (collection) q.collection = String(collection);
+  if (docId) q.docId = String(docId);
+  const total = await TokenLog.countDocuments(q);
+  const list = await TokenLog.find(q).sort({ createdAt: -1 }).skip((p - 1) * ps).limit(ps).lean();
+  return res.status(200).json({ page: p, pageSize: ps, total, list });
+}, { logLabel: 'GET /tokens/logs' }));
 
 // 批量删除词元日志（仅管理员）：可选按筛选条件删除
 router.delete('/tokens/logs', auth, requireAdmin, async (req, res) => {
