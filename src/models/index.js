@@ -11,25 +11,11 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    role: {
-        type: String,
-        enum: ['user', 'moderator', 'admin'], // 定义权限等级：普通/审核员/管理员
-        default: 'user' // 默认权限为普通用户
-    },
+    role: { type: String, enum: ['user','moderator','admin'], default: 'user' },
     // 用户头像（可选）：存储为 URL 或相对路径
-    avatar: {
-        type: String,
-        trim: true,
-        default: ''
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now
-    },
-    isActive: {
-        type: Boolean,
-        default: false // 默认未激活
-    }
+    avatar: { type: String, trim: true, default: '' },
+    createdAt: { type: Date, default: Date.now },
+    isActive: { type: Boolean, default: false }
 });
 
 // 在保存用户之前加密密码
@@ -50,10 +36,7 @@ const characterSchema = new mongoose.Schema({
         required: true,
         maxlength: 50
     },
-    title: {
-        type: String,
-        maxlength: 50
-    },
+    title: { type: String, maxlength: 50 },
     health: {
         type: Number,
         required: true
@@ -62,10 +45,7 @@ const characterSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
-    position: {
-        type: String,
-        maxlength: 20
-    }
+    position: { type: String, maxlength: 20 }
 });
 
 const cardSchema = new mongoose.Schema({
@@ -80,10 +60,7 @@ const cardSchema = new mongoose.Schema({
         required: true,
         maxlength: 50
     },
-    type: {
-        type: String,
-        maxlength: 20
-    }
+    type: { type: String, maxlength: 20 }
 });
 
 const termDynamicSchema = new mongoose.Schema({
@@ -92,10 +69,7 @@ const termDynamicSchema = new mongoose.Schema({
         required: true,
         maxlength: 50
     },
-    part: {
-        type: mongoose.Schema.Types.Mixed, // 用于存储任意 JSON
-        required: true
-    }
+    part: { type: mongoose.Schema.Types.Mixed, required: true }
 });
 
 const termFixedSchema = new mongoose.Schema({
@@ -110,20 +84,10 @@ const termFixedSchema = new mongoose.Schema({
         required: true,
         maxlength: 100
     },
-    color: {
-        type: String,
-        maxlength: 20
-    },
-    replace: {
-        type: String,
-        maxlength: 100
-    },
-    part: {
-        type: mongoose.Schema.Types.Mixed // 存储任意 JSON
-    },
-    epithet: {
-        type: mongoose.Schema.Types.Mixed // 存储任意 JSON
-    }
+    color: { type: String, maxlength: 20 },
+    replace: { type: String, maxlength: 100 },
+    part: { type: mongoose.Schema.Types.Mixed },
+    epithet: { type: mongoose.Schema.Types.Mixed }
 });
 
 const skillSchema = new mongoose.Schema({
@@ -136,11 +100,7 @@ const skillSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    strength: {
-        type: Number,
-        required: true,
-        enum: [0, 1, 2] // 限制只能是 0、1、2
-    },
+    strength: { type: Number, required: true, enum: [0,1,2] },
     role: [{
         id: {
             type: Number,
@@ -150,18 +110,9 @@ const skillSchema = new mongoose.Schema({
             type: Number,
             required: true
         },
-        dominator: {
-            type: Boolean,
-            default: false
-        },
-        lore: {
-            type: String,
-            maxlength: 200
-        },
-        legend: {
-            type: String,
-            maxlength: 200
-        }
+        dominator: { type: Boolean, default: false },
+        lore: { type: String, maxlength: 200 },
+        legend: { type: String, maxlength: 200 }
     }]
 });
 

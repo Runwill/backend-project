@@ -4,43 +4,23 @@ const path = require('path');
 function resolvePythonCmd() {
   // Respect environment if present
   const envPy = process.env.PYTHON || process.env.PYTHON_PATH || process.env.PY;
-  const candidates = [];
-  if (envPy && typeof envPy === 'string') {
-    // If points to directory, append python.exe
-    if (/\\$/.test(envPy) || envPy.endsWith('/') || envPy.endsWith('\\')) {
-      candidates.push(path.join(envPy, process.platform === 'win32' ? 'python.exe' : 'python'));
-    } else {
-      candidates.push(envPy);
-    }
-  }
-  if (process.platform === 'win32') {
-    candidates.push('py', 'python', 'python3');
-  } else {
-    candidates.push('python3', 'python');
-  }
-  return candidates;
+  const list = [];
+  if (envPy) list.push(/\\$|\/$/.test(envPy) ? path.join(envPy, process.platform === 'win32' ? 'python.exe' : 'python') : envPy);
+  list.push(...(process.platform === 'win32' ? ['py','python','python3'] : ['python3','python']));
+  return list;
 }
 
 function runPythonPinyin(texts, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const script = path.join(__dirname, '..', '..', 'python', 'pinyin.py');
-    const payload = JSON.stringify(texts || []);
-    const tried = [];
+  const payload = JSON.stringify(texts || []);
 
     const tryNext = (cands) => {
       if (!cands.length) {
         return resolve(texts.map(t => ({ full: String(t || ''), abbr: '' })));
       }
       const cmd = cands.shift();
-      tried.push(cmd);
-      let proc;
-      try {
-        // Force UTF-8 for Python stdio on Windows to avoid mojibake
-        const env = { ...process.env, PYTHONIOENCODING: 'utf-8' };
-        proc = spawn(cmd, [script], { stdio: ['pipe', 'pipe', 'pipe'], env });
-      } catch (e) {
-        return tryNext(cands);
-      }
+      let proc; try { proc = spawn(cmd, [script], { stdio: ['pipe','pipe','pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }); } catch { return tryNext(cands); }
       let out = '';
       let err = '';
       const timer = setTimeout(() => {
@@ -53,12 +33,11 @@ function runPythonPinyin(texts, timeoutMs = 5000) {
       proc.on('close', (code) => {
         clearTimeout(timer);
         if (code === 0 && out) {
-          try { return resolve(JSON.parse(out)); } catch (_) { return resolve(texts.map(t => ({ full: String(t || ''), abbr: '' }))); }
+          try { return resolve(JSON.parse(out)); } catch { return resolve(texts.map(t => ({ full: String(t || ''), abbr: '' }))); }
         }
-        // else try next
         tryNext(cands);
       });
-      try { proc.stdin.write(payload); proc.stdin.end(); } catch (_) { tryNext(cands); }
+      try { proc.stdin.write(payload); proc.stdin.end(); } catch { tryNext(cands); }
     };
     tryNext(resolvePythonCmd());
   });
@@ -71,7 +50,7 @@ function runPythonPinyin(texts, timeoutMs = 5000) {
  */
 function collectTextsFromDoc(doc, opts = {}) {
   const limit = Number.isFinite(opts.maxDepth) ? opts.maxDepth : 6;
-  const filterKeys = Array.isArray(opts.keys) && opts.keys.length ? new Set(opts.keys) : null;
+  const filterKeys = (Array.isArray(opts.keys) && opts.keys.length) ? new Set(opts.keys) : null;
   // 默认排除 _id/__v 以及英文键 en 和颜色 color
   const hideKeys = new Set(opts.hideKeys || ['_id', '__v', 'en', 'color']);
   const out = [];
@@ -79,18 +58,7 @@ function collectTextsFromDoc(doc, opts = {}) {
   const walk = (v, depth = 0, pathStr = '', keyName = '') => {
     if (depth > limit || v == null) return;
     const t = typeof v;
-    if (t === 'string') {
-      if (!filterKeys) {
-        // 缺省：收集所有字符串属性
-        if (v.trim()) out.push(v);
-      } else {
-        // 如有 keys，则仅在键名或路径匹配时收集
-        if ((keyName && filterKeys.has(keyName)) || (pathStr && filterKeys.has(pathStr))) {
-          if (v.trim()) out.push(v);
-        }
-      }
-      return;
-    }
+    if (t === 'string') { if (!filterKeys ? v.trim() : ((keyName && filterKeys.has(keyName)) || (pathStr && filterKeys.has(pathStr))) && v.trim()) out.push(v); return; }
     if (Array.isArray(v)) {
       for (let i = 0; i < v.length; i++) {
         const childPath = pathStr ? `${pathStr}.${i}` : String(i);
@@ -118,15 +86,12 @@ async function attachAggregatePinyin(docs, opts = {}) {
   if (!Array.isArray(docs) || docs.length === 0) return docs;
   const allTexts = [];
   const idx = [];
-  const perDocTexts = docs.map(d => collectTextsFromDoc(d, opts));
-  perDocTexts.forEach((arr, di) => {
-    (arr || []).forEach(t => { allTexts.push(t || ''); idx.push(di); });
-  });
+  docs.map(d => collectTextsFromDoc(d, opts)).forEach((arr, di) => (arr || []).forEach(t => { allTexts.push(t || ''); idx.push(di); }));
   if (allTexts.length === 0) {
     return docs;
   }
   const conv = await runPythonPinyin(allTexts);
-  const agg = new Array(docs.length).fill(null).map(() => ({ fulls: [] }));
+  const agg = new Array(docs.length).fill(0).map(() => ({ fulls: [] }));
   conv.forEach((r, i) => {
     const di = idx[i];
     if (di == null || di < 0) return;
@@ -140,9 +105,7 @@ async function attachAggregatePinyin(docs, opts = {}) {
     if (!d || !b) return;
     d.py = b.fulls.join(' ');
   });
-  if (process.env.DEBUG_PINYIN) {
-    try { console.log('[pinyin] aggregate done, sample:', docs && docs[0] && { py: docs[0].py }); } catch(_){ }
-  }
+  if (process.env.DEBUG_PINYIN) { try { console.log('[pinyin] aggregate done, sample:', docs?.[0] && { py: docs[0].py }); } catch{} }
   return docs;
 }
 

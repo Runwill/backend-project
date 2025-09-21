@@ -16,11 +16,10 @@ async function listWithPinyin(Model, options = {}) {
   if (Number.isFinite(limit) && limit > 0) q = q.limit(limit);
   let docs = await q.exec();
   try {
-    // 轻负载默认：只聚合常见中文字段；允许通过 options.pinyin.keys 覆盖
-    const defaultKeys = ['cn','name','title','replace','content','lore','legend'];
-    const opts = { ...(pinyin || {}), keys: (pinyin && Array.isArray(pinyin.keys) && pinyin.keys.length ? pinyin.keys : defaultKeys) };
+    const opts = { keys: ['cn','name','title','replace','content','lore','legend'], ...(pinyin || {}) };
+    if (!Array.isArray(opts.keys) || !opts.keys.length) opts.keys = ['cn','name','title','replace','content','lore','legend'];
     docs = await attachAggregatePinyin(docs, opts);
-  } catch (_) { /* ignore pinyin failures */ }
+  } catch (_) {}
   return docs;
 }
 

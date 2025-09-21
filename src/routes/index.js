@@ -22,56 +22,55 @@ const router = express.Router();
 // 统一的 brief 构造函数（用于日志与简要查询）
 function pickBrief(docLike) {
   try {
-    const d = docLike && (typeof docLike.toObject === 'function' ? docLike.toObject() : docLike);
+    const d = docLike?.toObject?.() ?? docLike;
+    if (!d) return {};
+    const { en, cn, name, id } = d;
     const o = {};
-    if (d && d.en) o.en = d.en;
-    if (d && d.cn) o.cn = d.cn;
-    if (d && d.name) o.name = d.name;
-    if (d && d.id != null) o.id = d.id;
+    if (en) o.en = en;
+    if (cn) o.cn = cn;
+    if (name) o.name = name;
+    if (id != null) o.id = id;
     return o;
-  } catch (_) {
-    return {};
-  }
+  } catch (_) { return {}; }
 }
 
 // Realtime SSE removed; keep a no-op broadcaster for compatibility
-function sseBroadcast(_) { /* no-op */ }
+function sseBroadcast(_) {}
+
+// 统一的 Token 日志记录 + 广播（失败静默）
+function logToken(type, collection, docId, payload, req) {
+  try {
+    const sourceId = req.header('x-client-id') || '';
+    const username = req.user?.username || '';
+    const base = { type, collection, docId, username, sourceId };
+    TokenLog.create({ ...base, ...payload }).catch(() => {});
+    sseBroadcast({ type, collection, id: docId, ...payload, sourceId });
+  } catch (_) {}
+}
 
 // 配置 multer 存储到 uploads/avatar 目录
 const uploadDir = path.join(__dirname, '..', '..', 'uploads', 'avatar');
 fs.mkdirSync(uploadDir, { recursive: true });
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const ext = path.extname(file.originalname) || '.png';
-    const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-    cb(null, safeName);
-  }
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${path.extname(file.originalname) || '.png'}`)
 });
 const upload = multer({
   storage,
-  fileFilter: (req, file, cb) => {
-    // 仅允许常见图片类型
+  fileFilter: (_req, file, cb) => {
     const allowed = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp'];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('不支持的文件类型'));
+    const ok = allowed.includes(file.mimetype);
+    cb(ok ? null : new Error('不支持的文件类型'), ok);
   },
-  limits: { fileSize: 2 * 1024 * 1024 } // 2MB
+  limits: { fileSize: 2 * 1024 * 1024 }
 });
 
 // 安全删除工具：仅删除 uploads/avatar 下由我们生成的文件
 function getFilePathFromUrl(url) {
   try {
-    if (!url) return null;
-    // 只使用文件名，避免路径穿越
-    const fileName = path.basename(url);
-    if (!fileName) return null;
-    return path.join(uploadDir, fileName);
-  } catch (e) {
-    return null;
-  }
+    const fileName = url && path.basename(url);
+    return fileName ? path.join(uploadDir, fileName) : null;
+  } catch (_) { return null; }
 }
 
 async function deleteAvatarFileByUrl(url) {
@@ -81,38 +80,28 @@ async function deleteAvatarFileByUrl(url) {
     await fs.promises.unlink(filePath);
     console.log('已清理头像文件:', filePath);
   } catch (e) {
-    if (e && e.code === 'ENOENT') return; // 文件不存在则忽略
-    console.warn('删除头像文件失败:', e && e.message ? e.message : e);
+    if (e?.code !== 'ENOENT') console.warn('删除头像文件失败:', e?.message || e);
   }
 }
 
 // 简易鉴权：解析 JWT，附加 req.user
 function auth(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ message: '未授权' });
-  try {
-    const payload = jwt.verify(token, process.env.SECRET_KEY || 'your_secret_key');
-    req.user = payload; // { id, username }
-    next();
-  } catch (e) {
-    return res.status(401).json({ message: '未授权' });
-  }
+  try { req.user = jwt.verify(token, process.env.SECRET_KEY || 'your_secret_key'); next(); }
+  catch { return res.status(401).json({ message: '未授权' }); }
 }
 
 // 基于角色的通用鉴权工厂
 function requireRole(allowedRoles) {
   const set = new Set(allowedRoles || []);
-  return async function (req, res, next) {
+  return async (req, res, next) => {
     try {
       if (!req.user?.id) return res.status(401).json({ message: '未授权' });
       const u = await User.findById(req.user.id);
       if (!u) return res.status(401).json({ message: '未授权' });
-      if (set.has(u.role)) return next();
-      return res.status(403).json({ message: '无权限' });
-    } catch (e) {
-      return res.status(500).json({ message: '服务器错误' });
-    }
+      return set.has(u.role) ? next() : res.status(403).json({ message: '无权限' });
+    } catch (_) { return res.status(500).json({ message: '服务器错误' }); }
   };
 }
 
@@ -294,16 +283,12 @@ router.post('/approve', auth, requireReviewer, async (req, res) => {
 function registerListRoute(pathname, Model, errorMessage, buildQuery) {
   router.get(pathname, async (req, res) => {
     try {
-      const opts = {};
-      if (typeof buildQuery === 'function') {
-        const q = buildQuery(req);
-        if (q && typeof q === 'object') opts.query = q;
-      }
-      const list = await listWithPinyin(Model, opts);
+      const q = (typeof buildQuery === 'function' && buildQuery(req));
+      const list = await listWithPinyin(Model, q && typeof q === 'object' ? { query: q } : {});
       res.status(200).json(list);
     } catch (error) {
-      const status = (error && Number.isInteger(error.status) && error.status >= 400 && error.status < 500) ? error.status : 500;
-      res.status(status).json({ message: errorMessage, error: (error && error.message) || String(error) });
+      const status = (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) ? error.status : 500;
+      res.status(status).json({ message: errorMessage, error: error?.message || String(error) });
     }
   });
 }
@@ -554,13 +539,7 @@ router.post('/tokens/update', auth, requireAdmin, async (req, res) => {
     const update = { $set: { [dotPath]: casted } };
     const doc = await Model.findByIdAndUpdate(id, update, { new: true });
     if (!doc) return res.status(404).json({ message: '文档不存在' });
-    try {
-      const sourceId = req.header('x-client-id') || '';
-      const username = (req.user && req.user.username) || '';
-      const brief = pickBrief(docBefore);
-      await TokenLog.create({ type: 'update', collection, docId: String(id), path: dotPath, value: casted, from: prevValue, doc: brief, username, sourceId });
-      sseBroadcast({ type: 'update', collection, id, path: dotPath, value: casted, from: prevValue, doc: brief, sourceId });
-    } catch (_) { }
+    logToken('update', collection, String(id), { path: dotPath, value: casted, from: prevValue, doc: pickBrief(docBefore) }, req);
     return res.status(200).json({ message: '更新成功', doc });
   } catch (e) {
     console.error('tokens/update 失败:', e);
@@ -616,13 +595,7 @@ router.post('/tokens/delete', auth, requireAdmin, async (req, res) => {
       return res.status(400).json({ message: '路径不是可删除的对象/数组' });
     }
 
-    try {
-      const sourceId = req.header('x-client-id') || '';
-      const username = (req.user && req.user.username) || '';
-      const brief = pickBrief(doc);
-      await TokenLog.create({ type: 'delete-field', collection, docId: String(id), path: dotPath, from: prevValue, doc: brief, username, sourceId });
-      sseBroadcast({ type: 'delete-field', collection, id, path: dotPath, from: prevValue, doc: brief, sourceId });
-    } catch (_) { }
+    logToken('delete-field', collection, String(id), { path: dotPath, from: prevValue, doc: pickBrief(doc) }, req);
     return res.status(200).json({ message: '删除成功' });
   } catch (e) {
     console.error('tokens/delete 失败:', e);
@@ -715,13 +688,7 @@ router.post('/tokens/create', auth, requireAdmin, async (req, res) => {
     if (!Model) return res.status(400).json({ message: '未知集合' });
     const doc = new Model(data);
     await doc.save();
-    try {
-      const sourceId = req.header('x-client-id') || '';
-      const username = (req.user && req.user.username) || '';
-      const brief = pickBrief(doc);
-      await TokenLog.create({ type: 'create', collection, docId: String(doc._id), doc: brief, username, sourceId });
-      sseBroadcast({ type: 'create', collection, id: doc._id, doc: brief, sourceId });
-    } catch (_) { }
+    logToken('create', collection, String(doc._id), { doc: pickBrief(doc) }, req);
     return res.status(201).json({ message: '创建成功', doc });
   } catch (e) {
     console.error('tokens/create 失败:', e);
@@ -744,13 +711,7 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
     if (!Model) return res.status(400).json({ message: '未知集合' });
     const doc = await Model.findByIdAndDelete(id);
     if (!doc) return res.status(404).json({ message: '文档不存在' });
-    try {
-      const sourceId = req.header('x-client-id') || '';
-      const username = (req.user && req.user.username) || '';
-      const brief = pickBrief(doc);
-      await TokenLog.create({ type: 'delete-doc', collection, docId: String(id), doc: brief, username, sourceId });
-      sseBroadcast({ type: 'delete-doc', collection, id, doc: brief, sourceId });
-    } catch (_) { }
+    logToken('delete-doc', collection, String(id), { doc: pickBrief(doc) }, req);
     return res.status(200).json({ message: '删除成功' });
   } catch (e) {
     console.error('tokens/remove 失败:', e);
@@ -760,17 +721,17 @@ router.post('/tokens/remove', auth, requireAdmin, async (req, res) => {
 
 // 统一存储日志：分页拉取（默认最近，按时间逆序）
 router.get('/tokens/logs', auth, asyncHandler(async (req, res) => {
-  const { page = 1, pageSize = 100, since, until, collection, docId } = req.query;
-  const p = Math.max(1, parseInt(page, 10) || 1);
-  const ps = Math.min(500, Math.max(1, parseInt(pageSize, 10) || 100));
-  const q = {};
-  if (since || until) {
+  const p = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const ps = Math.min(500, Math.max(1, parseInt(req.query.pageSize, 10) || 100));
+  const q = {
+    ...(req.query.collection && { collection: String(req.query.collection) }),
+    ...(req.query.docId && { docId: String(req.query.docId) })
+  };
+  if (req.query.since || req.query.until) {
     q.createdAt = {};
-    if (since) q.createdAt.$gte = new Date(since);
-    if (until) q.createdAt.$lte = new Date(until);
+    if (req.query.since) q.createdAt.$gte = new Date(req.query.since);
+    if (req.query.until) q.createdAt.$lte = new Date(req.query.until);
   }
-  if (collection) q.collection = String(collection);
-  if (docId) q.docId = String(docId);
   const total = await TokenLog.countDocuments(q);
   const list = await TokenLog.find(q).sort({ createdAt: -1 }).skip((p - 1) * ps).limit(ps).lean();
   return res.status(200).json({ page: p, pageSize: ps, total, list });
@@ -779,15 +740,15 @@ router.get('/tokens/logs', auth, asyncHandler(async (req, res) => {
 // 批量删除词元日志（仅管理员）：可选按筛选条件删除
 router.delete('/tokens/logs', auth, requireAdmin, async (req, res) => {
   try {
-    const { since, until, collection, docId } = req.query || {};
-    const q = {};
-    if (since || until) {
+    const q = {
+      ...(req.query.collection && { collection: String(req.query.collection) }),
+      ...(req.query.docId && { docId: String(req.query.docId) })
+    };
+    if (req.query.since || req.query.until) {
       q.createdAt = {};
-      if (since) q.createdAt.$gte = new Date(since);
-      if (until) q.createdAt.$lte = new Date(until);
+      if (req.query.since) q.createdAt.$gte = new Date(req.query.since);
+      if (req.query.until) q.createdAt.$lte = new Date(req.query.until);
     }
-    if (collection) q.collection = String(collection);
-    if (docId) q.docId = String(docId);
     const r = await TokenLog.deleteMany(q);
     const deleted = (r && (r.deletedCount || r.n)) || 0;
     return res.status(200).json({ message: '已清空', deleted });

@@ -3,20 +3,9 @@
 
 const DEFAULT_PORT = Number(process.env.PORT) || 3000;
 const DEFAULT_DB_URL = process.env.DB_URL || 'mongodb://localhost:27017/backend-project';
-const DEFAULT_CORS = [
-  'http://127.0.0.1:5500',
-  'http://localhost:5500',
-  // 如需允许本机 3000 前端调试，可取消下一行的注释
-  // 'http://localhost:3000'
-];
+const DEFAULT_CORS = ['http://127.0.0.1:5500','http://localhost:5500'];
 
-function parseOrigins(val) {
-  if (!val) return null;
-  return String(val)
-    .split(',')
-    .map(s => s && s.trim())
-    .filter(Boolean);
-}
+const parseOrigins = v => v ? String(v).split(',').map(s => s && s.trim()).filter(Boolean) : null;
 
 module.exports = {
   port: DEFAULT_PORT,
