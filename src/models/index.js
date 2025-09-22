@@ -159,13 +159,4 @@ tokenLogSchema.index({ collection: 1, docId: 1, createdAt: 1 });
 
 const TokenLog = mongoose.model('TokenLog', tokenLogSchema);
 
-module.exports = {
-    User,
-    Character,
-    Card,
-    TermDynamic,
-    TermFixed,
-    Skill,
-    AvatarChange
-    , TokenLog
-};
+module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog };
