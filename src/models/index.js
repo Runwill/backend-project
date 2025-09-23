@@ -79,9 +79,10 @@ const termFixedSchema = new mongoose.Schema({
         unique: true,
         maxlength: 50
     },
+    // 顶层 cn 改为可选，允许仅使用 epithet/part 等组合
     cn: {
         type: String,
-        required: true,
+        required: false,
         maxlength: 100
     },
     color: { type: String, maxlength: 20 },

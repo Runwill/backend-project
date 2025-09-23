@@ -478,10 +478,43 @@ router.post('/tokens/create', auth, requireAdmin, asyncHandler(async (req, res) 
   if (!collection || !data || typeof data !== 'object') return res.status(400).json({ message: '参数无效' });
   const Model = modelMap[collection];
   if (!Model) return res.status(400).json({ message: '未知集合' });
-  const doc = new Model(data);
-  await doc.save();
-  logToken('create', collection, String(doc._id), { doc: pickBrief(doc) }, req);
-  return res.status(201).json({ message: '创建成功', doc });
+
+  // 服务器端兜底：剔除非持久化/内部字段
+  const sanitize = (obj) => {
+    try {
+      if (!obj || typeof obj !== 'object') return obj;
+      if (Array.isArray(obj)) return obj.map(sanitize);
+      const out = {};
+      for (const k of Object.keys(obj)) {
+        if (k === '_id' || k === '__v' || k === '_v' || k === 'py') continue;
+        out[k] = sanitize(obj[k]);
+      }
+      return out;
+    } catch (_) { return obj; }
+  };
+  const payload = sanitize(data);
+
+  try {
+    const doc = new Model(payload);
+    await doc.save();
+    logToken('create', collection, String(doc._id), { doc: pickBrief(doc) }, req);
+    return res.status(201).json({ message: '创建成功', doc });
+  } catch (error) {
+    // 统一为更友好的 4xx 错误信息
+    if (error && error.name === 'ValidationError') {
+      const details = Object.values(error.errors || {}).map(e => e.message).filter(Boolean);
+      return res.status(400).json({ message: '校验失败', details });
+    }
+    // Mongo duplicate key error
+    if (error && (error.code === 11000 || error.code === 11001)) {
+      const kv = (error && error.keyValue) || {};
+      const keys = Object.keys(kv);
+      const msg = keys.length ? `唯一键冲突：${keys.map(k => `${k}=${kv[k]}`).join(', ')}` : '唯一键冲突';
+      return res.status(409).json({ message: msg });
+    }
+    // 其他错误交由 asyncHandler 统一处理（返回 500）
+    throw error;
+  }
 }, { logLabel: 'POST /tokens/create' }));
 
 // 删除整个文档（仅管理员）
