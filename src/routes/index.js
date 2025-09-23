@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index');
 const { listWithPinyin } = require('../services/listWithPinyin');
+const { attachAggregatePinyin } = require('../utils/pinyin');
 const { asyncHandler } = require('../utils/asyncHandler');
 
 // 统一的集合到模型映射（供 tokens 路由等复用）
@@ -497,8 +498,14 @@ router.post('/tokens/create', auth, requireAdmin, asyncHandler(async (req, res) 
   try {
     const doc = new Model(payload);
     await doc.save();
+    // 在返回前计算 py，确保前端立即可用拼音搜索
+    let outDoc = doc.toObject();
+    try {
+      const [withPy] = await attachAggregatePinyin([outDoc], { keys: ['cn','name','title','replace','content','lore','legend'] });
+      if (withPy) outDoc = withPy;
+    } catch (_) {}
     logToken('create', collection, String(doc._id), { doc: pickBrief(doc) }, req);
-    return res.status(201).json({ message: '创建成功', doc });
+    return res.status(201).json({ message: '创建成功', doc: outDoc });
   } catch (error) {
     // 统一为更友好的 4xx 错误信息
     if (error && error.name === 'ValidationError') {
