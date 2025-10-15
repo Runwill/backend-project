@@ -10,11 +10,15 @@ const app = express();
 
 // CORS
 const ORIGINS = serverConfig.corsOrigins;
-app.use(cors({
+const corsOptions = {
     origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('Not allowed by CORS')),
-    methods: ['GET','POST','PUT','DELETE'],
-    credentials: true
-}));
+    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+    allowedHeaders: ['Content-Type','Authorization','x-requested-with','x-client-id'],
+    credentials: true,
+};
+app.use(cors(corsOptions));
+// 显式处理所有路径的预检请求
+app.options('*', cors(corsOptions));
 
 // Middleware
 app.use(express.json());

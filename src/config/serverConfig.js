@@ -3,7 +3,12 @@
 
 const DEFAULT_PORT = Number(process.env.PORT) || 3000;
 const DEFAULT_DB_URL = process.env.DB_URL || 'mongodb://localhost:27017/backend-project';
-const DEFAULT_CORS = ['http://127.0.0.1:5500','http://localhost:5500'];
+// 默认允许本地开发和当前部署前端域名
+const DEFAULT_CORS = [
+  'http://127.0.0.1:5500',
+  'http://localhost:5500',
+  'http://ewdu7894156.vicp.fun'
+];
 
 const parseOrigins = v => v ? String(v).split(',').map(s => s && s.trim()).filter(Boolean) : null;
 
