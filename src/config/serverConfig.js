@@ -7,7 +7,7 @@ const DEFAULT_DB_URL = process.env.DB_URL || 'mongodb://localhost:27017/backend-
 const DEFAULT_CORS = [
   'http://127.0.0.1:5500',
   'http://localhost:5500',
-  'http://ewdu7894156.vicp.fun'
+  'http://120.55.7.7:8080/',
 ];
 
 const parseOrigins = v => v ? String(v).split(',').map(s => s && s.trim()).filter(Boolean) : null;
