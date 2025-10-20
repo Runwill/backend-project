@@ -139,6 +139,21 @@ router.post('/register', asyncHandler(async (req, res) => {
   res.status(201).json({ message: '注册请求已提交，等待管理员批准' });
 }, { logLabel: 'POST /register' }));
 
+// 修改密码（需登录）
+router.put('/change-password', auth, asyncHandler(async (req, res) => {
+  const { id, oldPassword, newPassword } = req.body || {};
+  if (!id || !oldPassword || !newPassword) return res.status(400).json({ message: '参数无效' });
+  const userIdFromToken = req.user?.id && String(req.user.id);
+  if (!userIdFromToken || userIdFromToken !== String(id)) return res.status(403).json({ message: '无权限' });
+  const user = await User.findById(id);
+  if (!user) return res.status(404).json({ message: '用户不存在' });
+  const ok = await bcrypt.compare(oldPassword, user.password);
+  if (!ok) return res.status(401).json({ message: '旧密码错误' });
+  user.password = newPassword; // 由模型 pre-save 钩子处理哈希
+  await user.save();
+  return res.status(200).json({ message: '密码已更新' });
+}, { logLabel: 'PUT /change-password' }));
+
 // 修改用户名和密码方法
 router.put('/update', asyncHandler(async (req, res) => {
   const { id, newUsername, newPassword, newAvatar } = req.body;

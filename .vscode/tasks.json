@@ -9,6 +9,12 @@
 				"$eslint-stylish"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Start backend server (node)",
+			"type": "shell",
+			"command": "node src/app.js",
+			"group": "build"
 		}
 	]
 }
