@@ -14,6 +14,8 @@ const userSchema = new mongoose.Schema({
     role: { type: String, enum: ['user','moderator','admin'], default: 'user' },
     // 用户头像（可选）：存储为 URL 或相对路径
     avatar: { type: String, trim: true, default: '' },
+    // 用户简介（可选）
+    intro: { type: String, trim: true, default: '', maxlength: 500 },
     createdAt: { type: Date, default: Date.now },
     isActive: { type: Boolean, default: false }
 });

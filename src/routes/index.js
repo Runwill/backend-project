@@ -123,7 +123,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   );
   res.json({
     token,
-    user: { id: user._id, username: user.username, role: user.role, avatar: user.avatar || '' }
+    user: { id: user._id, username: user.username, role: user.role, avatar: user.avatar || '', intro: user.intro || '' }
   });
 }, { logLabel: 'POST /login' }));
 
@@ -156,7 +156,7 @@ router.put('/change-password', auth, asyncHandler(async (req, res) => {
 
 // 修改用户名和密码方法
 router.put('/update', asyncHandler(async (req, res) => {
-  const { id, newUsername, newPassword, newAvatar } = req.body;
+  const { id, newUsername, newPassword, newAvatar, newIntro } = req.body;
   const user = await User.findById(id);
   if (!user) return res.status(404).json({ message: '用户' + id + '不存在' });
   if (typeof newUsername === 'string') {
@@ -169,6 +169,11 @@ router.put('/update', asyncHandler(async (req, res) => {
   }
   if (newPassword) user.password = newPassword; // 交由钩子加密
   if (typeof newAvatar === 'string') user.avatar = newAvatar;
+  if (typeof newIntro === 'string') {
+    const introTrimmed = newIntro.trim();
+    // 限制长度以匹配 schema（最多 500 字符）
+    user.intro = introTrimmed.length > 500 ? introTrimmed.slice(0, 500) : introTrimmed;
+  }
   await user.save();
   res.status(200).json({ message: '用户信息更新成功' });
 }, { logLabel: 'PUT /update' }));
@@ -277,6 +282,7 @@ router.get('/user/:id', asyncHandler(async (req, res) => {
     username: user.username,
     role: user.role,
     avatar: user.avatar || '',
+    intro: user.intro || '',
     isActive: !!user.isActive,
     createdAt: user.createdAt
   });
