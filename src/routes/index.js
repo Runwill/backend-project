@@ -4,7 +4,7 @@ const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog } = require('../models/index');
+const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange } = require('../models/index');
 const { listWithPinyin } = require('../services/listWithPinyin');
 const { attachAggregatePinyin } = require('../utils/pinyin');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -130,9 +130,13 @@ router.post('/login', asyncHandler(async (req, res) => {
 // 注册方法
 router.post('/register', asyncHandler(async (req, res) => {
   const { username, password, role, avatar } = req.body;
+  if (!username || typeof username !== 'string') return res.status(400).json({ message: '用户名无效' });
+  const name = username.trim();
+  if (name.length < 2) return res.status(400).json({ message: '用户名至少 2 个字符' });
+  if (name.length > 12) return res.status(400).json({ message: '用户名最多 12 个字符' });
   const existingUser = await User.findOne({ username });
   if (existingUser) return res.status(400).json({ message: '用户' + username + '已存在' });
-  const newUser = new User({ username, password, role: role || 'user', avatar: avatar || '', isActive: false });
+  const newUser = new User({ username: name, password, role: role || 'user', avatar: avatar || '', isActive: false });
   await newUser.save();
   const admins = await User.find({ role: 'admin' });
   admins.forEach(admin => console.log(`通知管理员 ${admin.username}: 用户 ${username} 请求注册`));
@@ -159,20 +163,14 @@ router.put('/update', asyncHandler(async (req, res) => {
   const { id, newUsername, newPassword, newAvatar, newIntro } = req.body;
   const user = await User.findById(id);
   if (!user) return res.status(404).json({ message: '用户' + id + '不存在' });
-  if (typeof newUsername === 'string') {
-    const trimmed = newUsername.trim();
-    if (trimmed && trimmed !== user.username) {
-      const exists = await User.findOne({ username: trimmed });
-      if (exists) return res.status(400).json({ message: '用户已存在' });
-      user.username = trimmed;
-    }
+  // 用户名改为“需要审核”，不在此处直接修改
+  if (typeof newUsername === 'string' && newUsername.trim() && newUsername.trim() !== user.username) {
+    return res.status(400).json({ message: '用户名修改需提交审核，请使用 /api/username/change 接口' });
   }
   if (newPassword) user.password = newPassword; // 交由钩子加密
   if (typeof newAvatar === 'string') user.avatar = newAvatar;
   if (typeof newIntro === 'string') {
-    const introTrimmed = newIntro.trim();
-    // 限制长度以匹配 schema（最多 500 字符）
-    user.intro = introTrimmed.length > 500 ? introTrimmed.slice(0, 500) : introTrimmed;
+    return res.status(400).json({ message: '简介修改需提交审核，请使用 /intro/change 接口' });
   }
   await user.save();
   res.status(200).json({ message: '用户信息更新成功' });
@@ -204,6 +202,189 @@ router.post('/approve', auth, requireReviewer, asyncHandler(async (req, res) => 
   }
   return res.status(400).json({ message: '无效的操作' });
 }, { logLabel: 'POST /approve' }));
+
+// 用户名修改 - 提交审核（与头像流程类似，不直接生效）
+router.post('/username/change', asyncHandler(async (req, res) => {
+  const { userId, newUsername } = req.body || {};
+  if (!userId || typeof newUsername !== 'string') {
+    return res.status(400).json({ message: '缺少用户ID或新用户名' });
+  }
+  const trimmed = newUsername.trim();
+  if (!trimmed) return res.status(400).json({ message: '新用户名不能为空' });
+  // 基本长度限制：与 userSchema 最大 12 对齐，下限 2
+  if (trimmed.length < 2) return res.status(400).json({ message: '用户名至少 2 个字符' });
+  if (trimmed.length > 12) return res.status(400).json({ message: '用户名最多 12 个字符' });
+
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '用户不存在' });
+  if (trimmed === user.username) return res.status(400).json({ message: '新旧用户名相同' });
+
+  // 预检唯一性（并发情况下最终以审批步骤为准，再次校验）
+  const exists = await User.findOne({ username: trimmed, _id: { $ne: user._id } });
+  if (exists) return res.status(409).json({ message: '该用户名已被占用' });
+
+  // 若已有 pending 记录，则覆盖新用户名；否则创建
+  let record = await UsernameChange.findOne({ user: userId, status: 'pending' });
+  if (record) {
+    record.newUsername = trimmed;
+    await record.save();
+  } else {
+    record = await UsernameChange.create({ user: userId, newUsername: trimmed });
+  }
+
+  // 通知管理员（用日志代替）
+  const admins = await User.find({ role: 'admin' });
+  admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交用户名修改审核 => ${trimmed}`));
+  return res.status(200).json({ message: '用户名变更已提交审核', status: record.status, newUsername: record.newUsername, recordId: record._id });
+}, { logLabel: 'POST /username/change' }));
+
+// 获取待审核的用户名变更列表（管理员/审核员）
+router.get('/username/pending', auth, requireReviewer, asyncHandler(async (_req, res) => {
+  const list = await UsernameChange.find({ status: 'pending' }).populate('user', 'username role');
+  res.status(200).json(list || []);
+}, { logLabel: 'GET /username/pending' }));
+
+// 获取当前用户的待审核用户名变更
+router.get('/username/pending/me', asyncHandler(async (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  const record = await UsernameChange.findOne({ user: userId, status: 'pending' });
+  return res.status(200).json(record || null);
+}, { logLabel: 'GET /username/pending/me' }));
+
+// 审核用户名变更
+router.post('/username/approve', auth, requireReviewer, asyncHandler(async (req, res) => {
+  const { recordId, action, reason } = req.body || {};
+  if (!recordId || !['approve', 'reject'].includes(action)) return res.status(400).json({ message: '参数无效' });
+  const record = await UsernameChange.findById(recordId);
+  if (!record) return res.status(404).json({ message: '记录不存在' });
+  if (record.status !== 'pending') return res.status(400).json({ message: '该记录已处理' });
+
+  if (action === 'approve') {
+    const user = await User.findById(record.user);
+    if (!user) return res.status(404).json({ message: '用户不存在' });
+    const target = (record.newUsername || '').trim();
+    if (!target) return res.status(400).json({ message: '记录无效的新用户名' });
+    if (target.length < 2) return res.status(400).json({ message: '用户名至少 2 个字符' });
+    if (target.length > 12) return res.status(400).json({ message: '用户名最多 12 个字符' });
+    if (target === user.username) {
+      // 无需变更，直接标记通过
+      record.status = 'approved';
+      record.reason = reason || '';
+      record.reviewedAt = new Date();
+      await record.save();
+      return res.status(200).json({ message: '已通过（用户名未变更）', record });
+    }
+    // 最终唯一性校验
+    const exists = await User.findOne({ username: target, _id: { $ne: user._id } });
+    if (exists) return res.status(409).json({ message: '该用户名已被占用' });
+    user.username = target;
+    await user.save();
+    record.status = 'approved';
+    record.reason = reason || '';
+    record.reviewedAt = new Date();
+    await record.save();
+    return res.status(200).json({ message: '已通过', record });
+  }
+  // reject
+  record.status = 'rejected';
+  record.reason = reason || '';
+  record.reviewedAt = new Date();
+  await record.save();
+  return res.status(200).json({ message: '已拒绝', record });
+}, { logLabel: 'POST /username/approve' }));
+
+// 撤回用户名变更（由用户发起）：删除自己的 pending 记录
+router.post('/username/cancel', asyncHandler(async (req, res) => {
+  const { userId } = req.body || {};
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  const record = await UsernameChange.findOne({ user: userId, status: 'pending' });
+  if (!record) return res.status(200).json({ message: '无待审核记录' });
+  await UsernameChange.deleteOne({ _id: record._id });
+  return res.status(200).json({ message: '已撤回' });
+}, { logLabel: 'POST /username/cancel' }));
+
+// 简介修改 - 提交审核（不直接生效）
+router.post('/intro/change', asyncHandler(async (req, res) => {
+  const { userId, newIntro } = req.body || {};
+  if (!userId || typeof newIntro !== 'string') {
+    return res.status(400).json({ message: '缺少用户ID或新简介' });
+  }
+  // 允许空字符串，但限制最大 500
+  const normalized = (newIntro || '').trim().slice(0, 500);
+
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '用户不存在' });
+  const current = (user.intro || '').trim();
+  if (normalized === current) return res.status(400).json({ message: '新旧简介相同' });
+
+  // 若已有 pending 记录，则覆盖；否则创建
+  let record = await IntroChange.findOne({ user: userId, status: 'pending' });
+  if (record) {
+    record.newIntro = normalized;
+    await record.save();
+  } else {
+    record = await IntroChange.create({ user: userId, newIntro: normalized });
+  }
+
+  // 通知管理员（日志代替）
+  const admins = await User.find({ role: 'admin' });
+  admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交简介修改审核`));
+  return res.status(200).json({ message: '简介变更已提交审核', status: record.status, newIntro: record.newIntro, recordId: record._id });
+}, { logLabel: 'POST /intro/change' }));
+
+// 获取待审核的简介变更列表（管理员/审核员）
+router.get('/intro/pending', auth, requireReviewer, asyncHandler(async (_req, res) => {
+  const list = await IntroChange.find({ status: 'pending' }).populate('user', 'username role');
+  res.status(200).json(list || []);
+}, { logLabel: 'GET /intro/pending' }));
+
+// 获取当前用户的待审核简介变更
+router.get('/intro/pending/me', asyncHandler(async (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  const record = await IntroChange.findOne({ user: userId, status: 'pending' });
+  return res.status(200).json(record || null);
+}, { logLabel: 'GET /intro/pending/me' }));
+
+// 审核简介变更
+router.post('/intro/approve', auth, requireReviewer, asyncHandler(async (req, res) => {
+  const { recordId, action, reason } = req.body || {};
+  if (!recordId || !['approve', 'reject'].includes(action)) return res.status(400).json({ message: '参数无效' });
+  const record = await IntroChange.findById(recordId);
+  if (!record) return res.status(404).json({ message: '记录不存在' });
+  if (record.status !== 'pending') return res.status(400).json({ message: '该记录已处理' });
+
+  if (action === 'approve') {
+    const user = await User.findById(record.user);
+    if (!user) return res.status(404).json({ message: '用户不存在' });
+    // 应用变更
+    const target = (record.newIntro || '').trim().slice(0, 500);
+    user.intro = target;
+    await user.save();
+    record.status = 'approved';
+    record.reason = reason || '';
+    record.reviewedAt = new Date();
+    await record.save();
+    return res.status(200).json({ message: '已通过', record });
+  }
+  // reject
+  record.status = 'rejected';
+  record.reason = reason || '';
+  record.reviewedAt = new Date();
+  await record.save();
+  return res.status(200).json({ message: '已拒绝', record });
+}, { logLabel: 'POST /intro/approve' }));
+
+// 撤回简介变更（由用户发起）：删除自己的 pending 记录
+router.post('/intro/cancel', asyncHandler(async (req, res) => {
+  const { userId } = req.body || {};
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  const record = await IntroChange.findOne({ user: userId, status: 'pending' });
+  if (!record) return res.status(200).json({ message: '无待审核记录' });
+  await IntroChange.deleteOne({ _id: record._id });
+  return res.status(200).json({ message: '已撤回' });
+}, { logLabel: 'POST /intro/cancel' }));
 
 // 通用列表路由注册器
 function registerListRoute(pathname, Model, errorMessage, buildQuery) {

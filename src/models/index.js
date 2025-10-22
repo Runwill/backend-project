@@ -5,7 +5,9 @@ const userSchema = new mongoose.Schema({
     username: {
         type: String,
         required: true,
-        unique: true
+        unique: true,
+        maxlength: 12,
+        trim: true
     },
     password: {
         type: String,
@@ -143,6 +145,21 @@ const TermFixed = mongoose.model('TermFixed', termFixedSchema);
 const Skill = mongoose.model('Skill', skillSchema);
 const AvatarChange = mongoose.model('AvatarChange', avatarChangeSchema);
 
+// 用户名修改审核记录（待审核/已通过/已拒绝）
+const usernameChangeSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    newUsername: { type: String, required: true, trim: true, maxlength: 12 },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    reason: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now },
+    reviewedAt: { type: Date }
+});
+
+// 限制同一用户仅存在1条“用户名变更”的待审核记录
+usernameChangeSchema.index({ user: 1 }, { unique: true, partialFilterExpression: { status: 'pending' } });
+
+const UsernameChange = mongoose.model('UsernameChange', usernameChangeSchema);
+
 // 词元变更日志（统一存储，供客户端拉取）
 const tokenLogSchema = new mongoose.Schema({
     type: { type: String, enum: ['create','update','delete-field','delete-doc','save-edits'], required: true },
@@ -162,4 +179,19 @@ tokenLogSchema.index({ collection: 1, docId: 1, createdAt: 1 });
 
 const TokenLog = mongoose.model('TokenLog', tokenLogSchema);
 
-module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, TokenLog };
+// 简介修改审核记录（待审核/已通过/已拒绝）
+const introChangeSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // 允许空字符串，最大 500，与 User.intro 约束一致
+    newIntro: { type: String, trim: true, maxlength: 500, default: '' },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    reason: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now },
+    reviewedAt: { type: Date }
+});
+// 限制同一用户仅存在1条“简介变更”的待审核记录
+introChangeSchema.index({ user: 1 }, { unique: true, partialFilterExpression: { status: 'pending' } });
+
+const IntroChange = mongoose.model('IntroChange', introChangeSchema);
+
+module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange };
