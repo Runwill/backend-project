@@ -219,6 +219,16 @@ router.post('/username/change', asyncHandler(async (req, res) => {
   if (!user) return res.status(404).json({ message: '用户不存在' });
   if (trimmed === user.username) return res.status(400).json({ message: '新旧用户名相同' });
 
+  // “仪同三司”免审核：直接修改
+  const hasBypass = Array.isArray(user.permissions) && user.permissions.includes('仪同三司');
+  if (hasBypass) {
+    const exists = await User.findOne({ username: trimmed, _id: { $ne: user._id } });
+    if (exists) return res.status(409).json({ message: '该用户名已被占用' });
+    user.username = trimmed;
+    await user.save();
+    return res.status(200).json({ message: '用户名已更新（免审核）', applied: true, username: user.username });
+  }
+
   // 预检唯一性（并发情况下最终以审批步骤为准，再次校验）
   const exists = await User.findOne({ username: trimmed, _id: { $ne: user._id } });
   if (exists) return res.status(409).json({ message: '该用户名已被占用' });
@@ -317,6 +327,14 @@ router.post('/intro/change', asyncHandler(async (req, res) => {
   if (!user) return res.status(404).json({ message: '用户不存在' });
   const current = (user.intro || '').trim();
   if (normalized === current) return res.status(400).json({ message: '新旧简介相同' });
+
+  // “仪同三司”免审核：直接修改
+  const hasBypass = Array.isArray(user.permissions) && user.permissions.includes('仪同三司');
+  if (hasBypass) {
+    user.intro = normalized;
+    await user.save();
+    return res.status(200).json({ message: '简介已更新（免审核）', applied: true, intro: user.intro });
+  }
 
   // 若已有 pending 记录，则覆盖；否则创建
   let record = await IntroChange.findOne({ user: userId, status: 'pending' });
@@ -481,6 +499,22 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
     }
     const relativeUrl = `/uploads/avatar/${req.file.filename}`;
 
+    // 若拥有“仪同三司”权限：直接替换头像，不走审核
+    try {
+      const user = await User.findById(userId);
+      if (user && Array.isArray(user.permissions) && user.permissions.includes('仪同三司')) {
+        const oldAvatar = user.avatar;
+        user.avatar = relativeUrl;
+        await user.save();
+        if (oldAvatar && oldAvatar !== relativeUrl) {
+          const cnt = await User.countDocuments({ _id: { $ne: user._id }, avatar: oldAvatar });
+          if (cnt === 0) await deleteAvatarFileByUrl(oldAvatar);
+        }
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        return res.status(200).json({ message: '头像已更新（免审核）', applied: true, url: `${baseUrl}${relativeUrl}`, relativeUrl });
+      }
+    } catch (_) {}
+
     // 若已有 pending 记录，替换图片并复用该记录；否则创建新记录
     let record = await AvatarChange.findOne({ user: userId, status: 'pending' });
     if (record) {
@@ -500,7 +534,7 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
     admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交头像审核 ${relativeUrl}`));
 
     const baseUrl = `${req.protocol}://${req.get('host')}`;
-    return res.status(200).json({ message: '头像已提交审核', url: `${baseUrl}${relativeUrl}`, status: record.status });
+    return res.status(200).json({ message: '头像已提交审核', url: `${baseUrl}${relativeUrl}`, relativeUrl, status: record.status });
   } catch (error) {
     console.error('上传或提交审核失败:', error);
     // 出错则尝试删除刚上传的临时文件，避免产生垃圾文件
@@ -793,3 +827,34 @@ router.get('/tokens/brief', asyncHandler(async (req, res) => {
 }, { logLabel: 'GET /tokens/brief' }));
 
 module.exports = router;
+ 
+// ======= 权限管理（仅管理员） =======
+// 查询用户（用于权限管理列表）
+router.get('/users/permissions', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const q = (req.query.search || '').trim();
+  const cond = q ? { username: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } } : {};
+  const list = await User.find(cond).select('username role permissions createdAt isActive').sort({ createdAt: -1 }).limit(500).lean();
+  res.status(200).json(list || []);
+}, { logLabel: 'GET /users/permissions' }));
+
+// 更新指定用户的权限集合（覆盖或增删）
+router.post('/user/permissions/update', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const { userId, action, permission, permissions } = req.body || {};
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '用户不存在' });
+  const arr = Array.isArray(user.permissions) ? user.permissions.slice() : [];
+  if (Array.isArray(permissions)) {
+    user.permissions = permissions.map(String);
+  } else if (permission && (action === 'grant' || action === 'revoke')) {
+    const p = String(permission);
+    const has = arr.includes(p);
+    if (action === 'grant' && !has) arr.push(p);
+    if (action === 'revoke' && has) arr.splice(arr.indexOf(p), 1);
+    user.permissions = arr;
+  } else {
+    return res.status(400).json({ message: '参数无效' });
+  }
+  await user.save();
+  res.status(200).json({ message: '已更新', user: { id: user._id, username: user.username, role: user.role, permissions: user.permissions } });
+}, { logLabel: 'POST /user/permissions/update' }));

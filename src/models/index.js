@@ -19,7 +19,9 @@ const userSchema = new mongoose.Schema({
     // 用户简介（可选）
     intro: { type: String, trim: true, default: '', maxlength: 500 },
     createdAt: { type: Date, default: Date.now },
-    isActive: { type: Boolean, default: false }
+    isActive: { type: Boolean, default: false },
+    // 独立于角色的权限集合，例如包含“仪同三司”则可免审核修改用户名/简介/头像
+    permissions: { type: [String], default: [] }
 });
 
 // 在保存用户之前加密密码
