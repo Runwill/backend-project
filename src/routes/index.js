@@ -482,6 +482,7 @@ router.get('/user/:id', asyncHandler(async (req, res) => {
     role: user.role,
     avatar: user.avatar || '',
     intro: user.intro || '',
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
     isActive: !!user.isActive,
     createdAt: user.createdAt
   });
