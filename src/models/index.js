@@ -196,4 +196,20 @@ introChangeSchema.index({ user: 1 }, { unique: true, partialFilterExpression: { 
 
 const IntroChange = mongoose.model('IntroChange', introChangeSchema);
 
-module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange };
+// 用户行为/账号变更日志（供权限页查看）
+const userLogSchema = new mongoose.Schema({
+    type: { type: String, required: true }, // 如 register/password-change/permissions-granted 等
+    userId: { type: String, required: true }, // 目标用户（被操作用户）
+    actorId: { type: String }, // 执行者（可能与 userId 相同，或管理员）
+    actorName: { type: String },
+    message: { type: String }, // 可选的简单说明
+    data: { type: mongoose.Schema.Types.Mixed }, // 附加数据，如 { grant:['赞拜不名'], revoke:[] }
+    sourceId: { type: String }, // 客户端标识
+    createdAt: { type: Date, default: Date.now }
+});
+userLogSchema.index({ createdAt: -1 });
+userLogSchema.index({ userId: 1, createdAt: -1 });
+
+const UserLog = mongoose.model('UserLog', userLogSchema);
+
+module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange, UserLog };
