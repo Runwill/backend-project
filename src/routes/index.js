@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange } = require('../models/index');
+const { PERMISSIONS } = require('../config/permissions');
 const { listWithPinyin } = require('../services/listWithPinyin');
 const { attachAggregatePinyin } = require('../utils/pinyin');
 const { asyncHandler } = require('../utils/asyncHandler');
@@ -830,6 +831,11 @@ router.get('/tokens/brief', asyncHandler(async (req, res) => {
 module.exports = router;
  
 // ======= 权限管理（仅管理员） =======
+// 列出统一权限清单（前端据此渲染可分配列表）
+router.get('/permissions', asyncHandler(async (_req, res) => {
+  res.status(200).json(PERMISSIONS || []);
+}, { logLabel: 'GET /permissions' }));
+
 // 查询用户（用于权限管理列表）
 router.get('/users/permissions', auth, requireAdmin, asyncHandler(async (req, res) => {
   const q = (req.query.search || '').trim();
@@ -846,9 +852,17 @@ router.post('/user/permissions/update', auth, requireAdmin, asyncHandler(async (
   if (!user) return res.status(404).json({ message: '用户不存在' });
   const arr = Array.isArray(user.permissions) ? user.permissions.slice() : [];
   if (Array.isArray(permissions)) {
-    user.permissions = permissions.map(String);
+    // 校验整包权限是否均在后端清单中
+    const all = permissions.map(String);
+    const invalid = all.find(p => !PERMISSIONS.includes(p));
+    if (invalid) return res.status(400).json({ message: '无效的权限', permission: invalid });
+    user.permissions = all;
   } else if (permission && (action === 'grant' || action === 'revoke')) {
     const p = String(permission);
+    // 仅在新增授予时做清单校验；撤销允许（即使权限不在清单，以便清理历史遗留）
+    if (action === 'grant' && !PERMISSIONS.includes(p)) {
+      return res.status(400).json({ message: '无效的权限', permission: p });
+    }
     const has = arr.includes(p);
     if (action === 'grant' && !has) arr.push(p);
     if (action === 'revoke' && has) arr.splice(arr.indexOf(p), 1);
