@@ -856,6 +856,45 @@ router.get('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) => {
     const ps = Math.min(500, Math.max(1, parseInt(req.query.pageSize, 10) || 100));
     const q = {};
     if (req.query.userId) q.userId = String(req.query.userId);
+
+    // 类型过滤（逗号分隔）
+    if (req.query.types) {
+      const arr = String(req.query.types).split(',').map(s => s.trim()).filter(Boolean);
+      if (arr.length) q.type = { $in: arr };
+    }
+    // 时间范围
+    if (req.query.since || req.query.until) {
+      q.createdAt = {};
+      if (req.query.since) q.createdAt.$gte = new Date(req.query.since);
+      if (req.query.until) {
+        const end = new Date(req.query.until);
+        // 若仅给出日期，宽松地加一天减一毫秒，覆盖整天（避免时区误差可由客户端传入具体时间）
+        if (!isNaN(end.getTime()) && req.query.until.length <= 10) {
+          q.createdAt.$lte = new Date(end.getTime() + 24*60*60*1000 - 1);
+        } else {
+          q.createdAt.$lte = end;
+        }
+      }
+    }
+    // 关键字搜索：actorName / message / data.* 常见字段
+    if (req.query.q) {
+      const kw = String(req.query.q).trim();
+      if (kw) {
+        const regex = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        q.$or = [
+          { actorName: regex },
+          { message: regex },
+          { 'data.applicantName': regex },
+          { 'data.username': regex },
+          { 'data.newUsername': regex },
+          { 'data.intro': regex },
+          { 'data.newIntro': regex },
+          { 'data.url': regex },
+          { 'data.reason': regex }
+        ];
+      }
+    }
+
     const total = await UserLog.countDocuments(q);
     const list = await UserLog.find(q).sort({ createdAt: -1 }).skip((p - 1) * ps).limit(ps).lean();
     return res.status(200).json({ page: p, pageSize: ps, total, list });
