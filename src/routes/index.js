@@ -882,6 +882,15 @@ router.delete('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) =>
   }
 }, { logLabel: 'DELETE /user/logs' }));
 
+// 删除一条用户日志（仅管理员）
+router.delete('/user/logs/:id', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ message: '缺少日志ID' });
+  const log = await UserLog.findByIdAndDelete(id);
+  if (!log) return res.status(404).json({ message: '日志不存在' });
+  return res.status(200).json({ message: '删除成功' });
+}, { logLabel: 'DELETE /user/logs/:id' }));
+
 // 批量删除词元日志（仅管理员）：可选按筛选条件删除
 router.delete('/tokens/logs', auth, requireAdmin, asyncHandler(async (req, res) => {
   const q = {
