@@ -1022,3 +1022,19 @@ router.post('/user/permissions/update', auth, requireAdmin, asyncHandler(async (
   } catch(_){}
   res.status(200).json({ message: '已更新', user: { id: user._id, username: user.username, role: user.role, permissions: sortPerms(user.permissions) } });
 }, { logLabel: 'POST /user/permissions/update' }));
+
+// 管理员为任意用户设置新密码（无需旧密码）
+router.post('/user/password/set', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const { userId, newPassword } = req.body || {};
+  if (!userId) return res.status(400).json({ message: '缺少用户ID' });
+  if (!newPassword || typeof newPassword !== 'string') return res.status(400).json({ message: '新密码无效' });
+  if (newPassword.length < 6) return res.status(400).json({ message: '新密码至少 6 位' });
+
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: '用户不存在' });
+
+  user.password = newPassword; // 交由模型 pre-save 钩子加密
+  await user.save();
+  try { logUser('password-change', String(user._id), { message: '管理员修改密码' }, req); } catch(_){ }
+  return res.status(200).json({ message: '密码已更新' });
+}, { logLabel: 'POST /user/password/set' }));
