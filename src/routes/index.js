@@ -1038,3 +1038,21 @@ router.post('/user/password/set', auth, requireAdmin, asyncHandler(async (req, r
   try { logUser('password-change', String(user._id), { message: '管理员修改密码' }, req); } catch(_){ }
   return res.status(200).json({ message: '密码已更新' });
 }, { logLabel: 'POST /user/password/set' }));
+
+// 管理员为任意用户设置角色
+router.post('/user/role/set', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const { userId, role } = req.body || {};
+  const ALLOWED = new Set(['admin', 'moderator', 'user', 'guest']);
+  if (!userId || !ALLOWED.has(role)) {
+    return res.status(400).json({ message: '无效的参数' });
+  }
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({ message: '用户不存在' });
+  }
+  const from = user.role;
+  user.role = role;
+  await user.save();
+  try { logUser('role-changed', String(user._id), { message: '管理员修改角色', data: { from, to: role } }, req); } catch(_) {}
+  return res.status(200).json({ message: '角色已更新', role });
+}, { logLabel: 'POST /user/role/set' }));
