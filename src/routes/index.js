@@ -67,7 +67,7 @@ function logUser(type, userId, payload, req) {
     const actorId = req?.user?.id ? String(req.user.id) : '';
     const actorName = req?.user?.username || '';
     const base = { type, userId: String(userId || ''), actorId, actorName, sourceId };
-  UserLog.create({ ...base, ...(payload || {}) }).catch(() => { });
+    UserLog.create({ ...base, ...(payload || {}) }).catch(() => {});
   } catch(_) { }
 }
 
@@ -173,7 +173,7 @@ router.post('/register', asyncHandler(async (req, res) => {
     permissions: []
   });
   await newUser.save();
-  try { logUser('user-registered', String(newUser._id), { message: '用户注册，待审核', data: { applicantName: newUser.username } }, req); } catch(_){ }
+  try { logUser('user-registered', String(newUser._id), { message: '用户注册，待审核', data: { applicantName: newUser.username, username: newUser.username } }, req); } catch(_){ }
   return res.status(201).json({ message: '注册成功，待审核', userId: newUser._id });
 }, { logLabel: 'POST /register' }));
 
@@ -189,7 +189,7 @@ router.put('/change-password', auth, asyncHandler(async (req, res) => {
   if (!ok) return res.status(401).json({ message: '旧密码错误' });
   user.password = newPassword; // 由模型 pre-save 钩子处理哈希
   await user.save();
-  try { logUser('password-change', String(user._id), { message: '修改密码' }, req); } catch(_){ }
+  try { logUser('password-change', String(user._id), { message: '修改密码', data: { username: user.username } }, req); } catch(_){ }
   return res.status(200).json({ message: '密码已更新' });
 }, { logLabel: 'PUT /change-password' }));
 
@@ -225,7 +225,7 @@ router.post('/approve', auth, requireReviewer, asyncHandler(async (req, res) => 
   if (action === 'approve') {
   user.isActive = true;
   await user.save();
-  try { logUser('user-approved', String(user._id), { message: '管理员通过注册', data: { applicantName: user.username } }, req); } catch(_){}
+  try { logUser('user-approved', String(user._id), { message: '管理员通过注册', data: { applicantName: user.username, username: user.username } }, req); } catch(_){}
   return res.status(200).json({ message: '用户已成功激活' });
   }
   if (action === 'reject') {
@@ -235,7 +235,7 @@ router.post('/approve', auth, requireReviewer, asyncHandler(async (req, res) => 
   for (const c of changes) { if (c?.url) await deleteAvatarFileByUrl(c.url); }
   await AvatarChange.deleteMany({ user: userId });
   await User.findByIdAndDelete(userId);
-  try { logUser('user-rejected', String(userId), { message: '管理员拒绝注册', data: { applicantName } }, req); } catch(_){}
+  try { logUser('user-rejected', String(userId), { message: '管理员拒绝注册', data: { applicantName, username: applicantName } }, req); } catch(_){}
   return res.status(200).json({ message: '用户已被退回并删除' });
   }
   return res.status(400).json({ message: '无效的操作' });
@@ -248,7 +248,6 @@ router.post('/username/change', asyncHandler(async (req, res) => {
     return res.status(400).json({ message: '缺少用户ID或新用户名' });
   }
   const trimmed = newUsername.trim();
-  if (!trimmed) return res.status(400).json({ message: '新用户名不能为空' });
   // 基本长度限制：与 userSchema 最大 12 对齐，下限 2
   if (trimmed.length < 2) return res.status(400).json({ message: '用户名至少 2 个字符' });
   if (trimmed.length > 12) return res.status(400).json({ message: '用户名最多 12 个字符' });
@@ -284,7 +283,7 @@ router.post('/username/change', asyncHandler(async (req, res) => {
   // 通知管理员（用日志代替）
   const admins = await User.find({ role: 'admin' });
   admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交用户名修改审核 => ${trimmed}`));
-  try { logUser('username-submitted', String(user._id), { actorId: String(user._id), actorName: user.username, message: '提交用户名修改审核', data: { newUsername: trimmed } }, req); } catch(_){ }
+  try { logUser('username-submitted', String(user._id), { actorId: String(user._id), actorName: user.username, message: '提交用户名修改审核', data: { username: user.username, newUsername: trimmed } }, req); } catch(_){ }
   return res.status(200).json({ message: '用户名变更已提交审核', status: record.status, newUsername: record.newUsername, recordId: record._id });
 }, { logLabel: 'POST /username/change' }));
 
@@ -317,13 +316,12 @@ router.post('/username/approve', auth, requireReviewer, asyncHandler(async (req,
     if (!target) return res.status(400).json({ message: '记录无效的新用户名' });
     if (target.length < 2) return res.status(400).json({ message: '用户名至少 2 个字符' });
     if (target.length > 12) return res.status(400).json({ message: '用户名最多 12 个字符' });
-    if (target === user.username) {
+  if (target === user.username) {
       // 无需变更，直接标记通过
-      record.status = 'approved';
-      record.reason = reason || '';
+  record.status = 'approved';
       record.reviewedAt = new Date();
       await record.save();
-    try { logUser('username-approved', String(user._id), { message: '用户名审核通过（无变更）', data: { username: user.username, applicantName: user.username } }, req); } catch(_){ }
+    try { logUser('username-approved', String(user._id), { message: '用户名审核通过（无变更）', data: { username: user.username } }, req); } catch(_){ }
       return res.status(200).json({ message: '已通过（用户名未变更）', record });
     }
     // 最终唯一性校验
@@ -331,19 +329,18 @@ router.post('/username/approve', auth, requireReviewer, asyncHandler(async (req,
     if (exists) return res.status(409).json({ message: '该用户名已被占用' });
     user.username = target;
     await user.save();
-    record.status = 'approved';
-    record.reason = reason || '';
+  record.status = 'approved';
     record.reviewedAt = new Date();
     await record.save();
-  try { logUser('username-approved', String(user._id), { message: '用户名审核通过', data: { username: target, applicantName: user.username } }, req); } catch(_){ }
+  try { logUser('username-approved', String(user._id), { message: '用户名审核通过', data: { username: target } }, req); } catch(_){ }
     return res.status(200).json({ message: '已通过', record });
   }
-  // reject
+  // reject（不再保存 reason）
   record.status = 'rejected';
-  record.reason = reason || '';
   record.reviewedAt = new Date();
   await record.save();
-  try { const u = await User.findById(record.user).lean(); logUser('username-rejected', String(record.user), { message: '用户名修改被拒绝', data: { reason: record.reason, newUsername: record.newUsername, applicantName: (u && u.username) || '' } }, req); } catch(_){ }
+  // 日志中不再记录原因，仅保留新用户名和申请人
+  try { const u = await User.findById(record.user).lean(); logUser('username-rejected', String(record.user), { message: '用户名修改被拒绝', data: { username: (u && u.username) || '', newUsername: record.newUsername, applicantName: (u && u.username) || '' } }, req); } catch(_){ }
   return res.status(200).json({ message: '已拒绝', record });
 }, { logLabel: 'POST /username/approve' }));
 
@@ -353,7 +350,18 @@ router.post('/username/cancel', asyncHandler(async (req, res) => {
   if (!userId) return res.status(400).json({ message: '缺少用户ID' });
   const record = await UsernameChange.findOne({ user: userId, status: 'pending' });
   if (!record) return res.status(200).json({ message: '无待审核记录' });
-  try { await UsernameChange.deleteOne({ _id: record._id }); const u = await User.findById(userId).lean(); logUser('username-cancelled', String(userId), { actorId: String(userId), actorName: (u && u.username) || '', message: '撤回用户名修改申请' }, req); } catch(_){}
+  try {
+    // 先记录被撤回的新用户名，再删除记录
+    const withdrawn = record.newUsername;
+    await UsernameChange.deleteOne({ _id: record._id });
+    const u = await User.findById(userId).lean();
+    logUser('username-cancelled', String(userId), {
+      actorId: String(userId),
+      actorName: (u && u.username) || '',
+      message: '撤回用户名修改申请',
+      data: { username: (u && u.username) || '', newUsername: withdrawn }
+    }, req);
+  } catch(_){}
   return res.status(200).json({ message: '已撤回' });
 }, { logLabel: 'POST /username/cancel' }));
 
@@ -376,7 +384,7 @@ router.post('/intro/change', asyncHandler(async (req, res) => {
   if (hasBypass) {
     user.intro = normalized;
     await user.save();
-    try { logUser('intro-approved', String(user._id), { actorId: String(user._id), actorName: user.username, message: '免审核：简介已更新', data: { intro: user.intro } }, req); } catch(_){ }
+  try { logUser('intro-approved', String(user._id), { actorId: String(user._id), actorName: user.username, message: '免审核：简介已更新', data: { username: user.username, intro: user.intro } }, req); } catch(_){ }
     return res.status(200).json({ message: '简介已更新（免审核）', applied: true, intro: user.intro });
   }
 
@@ -394,7 +402,7 @@ router.post('/intro/change', asyncHandler(async (req, res) => {
   admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交简介修改审核`));
   try {
     const u = await User.findById(userId).lean();
-    logUser('intro-submitted', String(userId), { actorId: String(userId), actorName: (u && u.username) || '', message: '提交简介修改审核', data: { newIntro: normalized } }, req);
+  logUser('intro-submitted', String(userId), { actorId: String(userId), actorName: (u && u.username) || '', message: '提交简介修改审核', data: { username: (u && u.username) || '', newIntro: normalized } }, req);
   } catch(_){ }
   return res.status(200).json({ message: '简介变更已提交审核', status: record.status, newIntro: record.newIntro, recordId: record._id });
 }, { logLabel: 'POST /intro/change' }));
@@ -428,19 +436,17 @@ router.post('/intro/approve', auth, requireReviewer, asyncHandler(async (req, re
     const target = (record.newIntro || '').trim().slice(0, 500);
     user.intro = target;
   await user.save();
-    record.status = 'approved';
-    record.reason = reason || '';
+  record.status = 'approved';
     record.reviewedAt = new Date();
     await record.save();
-  try { logUser('intro-approved', String(user._id), { message: '简介审核通过', data: { intro: user.intro, applicantName: user.username } }, req); } catch(_){ }
+  try { logUser('intro-approved', String(user._id), { message: '简介审核通过', data: { username: user.username, intro: user.intro, applicantName: user.username } }, req); } catch(_){ }
     return res.status(200).json({ message: '已通过', record });
   }
-  // reject
+  // reject（不再保存 reason）
   record.status = 'rejected';
-  record.reason = reason || '';
   record.reviewedAt = new Date();
   await record.save();
-  try { const u = await User.findById(record.user).lean(); logUser('intro-rejected', String(record.user), { message: '简介审核拒绝', data: { reason: record.reason, newIntro: record.newIntro, applicantName: (u && u.username) || '' } }, req); } catch(_){ }
+  try { const u = await User.findById(record.user).lean(); logUser('intro-rejected', String(record.user), { message: '简介审核拒绝', data: { username: (u && u.username) || '', newIntro: record.newIntro, applicantName: (u && u.username) || '' } }, req); } catch(_){ }
   return res.status(200).json({ message: '已拒绝', record });
 }, { logLabel: 'POST /intro/approve' }));
 
@@ -450,7 +456,17 @@ router.post('/intro/cancel', asyncHandler(async (req, res) => {
   if (!userId) return res.status(400).json({ message: '缺少用户ID' });
   const record = await IntroChange.findOne({ user: userId, status: 'pending' });
   if (!record) return res.status(200).json({ message: '无待审核记录' });
-  try { await IntroChange.deleteOne({ _id: record._id }); const u = await User.findById(userId).lean(); logUser('intro-cancelled', String(userId), { actorId: String(userId), actorName: (u && u.username) || '', message: '撤回简介修改申请' }, req); } catch(_){ }
+  try {
+    const newIntro = record?.newIntro || '';
+    await IntroChange.deleteOne({ _id: record._id });
+    const u = await User.findById(userId).lean();
+    logUser('intro-cancelled', String(userId), {
+      actorId: String(userId),
+      actorName: (u && u.username) || '',
+      message: '撤回简介修改申请',
+      data: { username: (u && u.username) || '', newIntro }
+    }, req);
+  } catch(_){ }
   return res.status(200).json({ message: '已撤回' });
 }, { logLabel: 'POST /intro/cancel' }));
 
@@ -562,8 +578,8 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
           const cnt = await User.countDocuments({ _id: { $ne: user._id }, avatar: oldAvatar });
           if (cnt === 0) await deleteAvatarFileByUrl(oldAvatar);
         }
-  const baseUrl = `${req.protocol}://${req.get('host')}`;
-  try { logUser('avatar-approved', String(user._id), { actorId: String(user._id), actorName: user.username, message: '免审核：头像已更新', data: { url: relativeUrl } }, req); } catch(_){ }
+        const baseUrl = `${req.protocol}://${req.get('host')}`; 
+  try { logUser('avatar-approved', String(user._id), { actorId: String(user._id), actorName: user.username, message: '免审核：头像已更新', data: { username: user.username, url: relativeUrl } }, req); } catch(_){ }
   return res.status(200).json({ message: '头像已更新（免审核）', applied: true, url: `${baseUrl}${relativeUrl}`, relativeUrl });
       }
     } catch (_) {}
@@ -587,7 +603,7 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
     admins.forEach(a => console.log(`通知管理员 ${a.username}: 用户 ${userId} 提交头像审核 ${relativeUrl}`));
 
   const baseUrl = `${req.protocol}://${req.get('host')}`;
-  try { const u = await User.findById(userId).lean(); logUser('avatar-submitted', String(userId), { actorId: String(userId), actorName: (u && u.username) || '', message: '提交头像审核', data: { url: relativeUrl } }, req); } catch(_){ }
+  try { const u = await User.findById(userId).lean(); logUser('avatar-submitted', String(userId), { actorId: String(userId), actorName: (u && u.username) || '', message: '提交头像审核', data: { username: (u && u.username) || '', url: relativeUrl } }, req); } catch(_){ }
     return res.status(200).json({ message: '头像已提交审核', url: `${baseUrl}${relativeUrl}`, relativeUrl, status: record.status });
   } catch (error) {
     console.error('上传或提交审核失败:', error);
@@ -621,7 +637,7 @@ router.post('/avatar/approve', auth, requireReviewer, asyncHandler(async (req, r
   const record = await AvatarChange.findById(recordId);
   if (!record) return res.status(404).json({ message: '记录不存在' });
   if (record.status !== 'pending') return res.status(400).json({ message: '该记录已处理' });
-    if (action === 'approve') {
+  if (action === 'approve') {
     const user = await User.findById(record.user);
     if (!user) return res.status(404).json({ message: '用户不存在' });
     const oldAvatar = user.avatar;
@@ -631,19 +647,24 @@ router.post('/avatar/approve', auth, requireReviewer, asyncHandler(async (req, r
       const cnt = await User.countDocuments({ _id: { $ne: user._id }, avatar: oldAvatar });
       if (cnt === 0) await deleteAvatarFileByUrl(oldAvatar);
     }
-        record.status = 'approved';
-    record.reason = reason || '';
-    record.reviewedAt = new Date();
+    record.status = 'approved';
+  record.reviewedAt = new Date();
   await record.save();
-  try { logUser('avatar-approved', String(user._id), { message: '头像审核通过', data: { url: user.avatar, applicantName: user.username } }, req); } catch(_){}
+  try { logUser('avatar-approved', String(user._id), { message: '头像审核通过', data: { username: user.username, url: user.avatar, applicantName: user.username } }, req); } catch(_){}
   return res.status(200).json({ message: '已通过', record });
   }
   record.status = 'rejected';
-  record.reason = reason || '';
   record.reviewedAt = new Date();
   await record.save();
   if (record.url) await deleteAvatarFileByUrl(record.url);
-  try { const u = await User.findById(record.user).lean(); logUser('avatar-rejected', String(record.user), { message: '头像审核拒绝', data: { reason: record.reason, url: record.url, applicantName: (u && u.username) || '' } }, req); } catch(_){}
+  try {
+    const u = await User.findById(record.user).lean();
+    // 移除 reason 字段，不在日志中暴露审核备注
+    logUser('avatar-rejected', String(record.user), {
+      message: '头像审核拒绝',
+      data: { username: (u && u.username) || '', url: record.url, applicantName: (u && u.username) || '' }
+    }, req);
+  } catch(_){ }
   return res.status(200).json({ message: '已拒绝', record });
 }, { logLabel: 'POST /avatar/approve' }));
 
@@ -1015,9 +1036,10 @@ router.post('/user/permissions/update', auth, requireAdmin, asyncHandler(async (
   await user.save();
   try {
     if (changed) {
-      if (changed.type === 'replaced') logUser('permissions-replaced', String(user._id), { data: { from: prev, to: changed.to } }, req);
-      if (changed.type === 'grant') logUser('permissions-granted', String(user._id), { data: { perm: changed.p } }, req);
-      if (changed.type === 'revoke') logUser('permissions-revoked', String(user._id), { data: { perm: changed.p } }, req);
+      const uname = user.username;
+      if (changed.type === 'replaced') logUser('permissions-replaced', String(user._id), { data: { from: prev, to: changed.to, username: uname } }, req);
+      if (changed.type === 'grant')    logUser('permissions-granted',  String(user._id), { data: { perm: changed.p, username: uname } }, req);
+      if (changed.type === 'revoke')   logUser('permissions-revoked',  String(user._id), { data: { perm: changed.p, username: uname } }, req);
     }
   } catch(_){}
   res.status(200).json({ message: '已更新', user: { id: user._id, username: user.username, role: user.role, permissions: sortPerms(user.permissions) } });
@@ -1035,7 +1057,7 @@ router.post('/user/password/set', auth, requireAdmin, asyncHandler(async (req, r
 
   user.password = newPassword; // 交由模型 pre-save 钩子加密
   await user.save();
-  try { logUser('password-change', String(user._id), { message: '管理员修改密码' }, req); } catch(_){ }
+  try { logUser('password-change', String(user._id), { message: '管理员修改密码', data: { username: user.username } }, req); } catch(_){ }
   return res.status(200).json({ message: '密码已更新' });
 }, { logLabel: 'POST /user/password/set' }));
 
@@ -1053,6 +1075,12 @@ router.post('/user/role/set', auth, requireAdmin, asyncHandler(async (req, res) 
   const from = user.role;
   user.role = role;
   await user.save();
-  try { logUser('role-changed', String(user._id), { message: '管理员修改角色', data: { from, to: role } }, req); } catch(_) {}
+  try {
+    // 日志增加目标用户名与 old/new 角色，字段名与前端模板占位符对齐
+    logUser('role-changed', String(user._id), {
+      message: '管理员修改角色',
+      data: { username: user.username, oldRole: from, newRole: role }
+    }, req);
+  } catch(_) {}
   return res.status(200).json({ message: '角色已更新', role });
 }, { logLabel: 'POST /user/role/set' }));
