@@ -987,6 +987,23 @@ router.get('/tokens/brief', asyncHandler(async (req, res) => {
   return res.status(200).json(pickBrief(doc));
 }, { logLabel: 'GET /tokens/brief' }));
 
+// 公开获取词元列表（用于游戏配置等场景）
+router.get('/tokens/public-list', asyncHandler(async (req, res) => {
+  const { collection } = req.query;
+  if (!collection) return res.status(400).json({ message: '缺少 collection 参数' });
+  const Model = modelMap[collection];
+  if (!Model) return res.status(400).json({ message: '未知集合' });
+  
+  // 简易查询，返回所有记录
+  // 可以根据需要添加 limit 或 query
+  const list = await listWithPinyin(Model, { 
+    limit: 1000,
+    sort: { _id: 1 } 
+  });
+  
+  return res.status(200).json(list);
+}, { logLabel: 'GET /tokens/public-list' }));
+
 module.exports = router;
  
 // ======= 权限管理（仅管理员） =======
