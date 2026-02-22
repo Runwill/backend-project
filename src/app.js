@@ -61,11 +61,13 @@ io.on('connection', (socket) => {
         const result = gameRoomService.createRoom(roomId, userInfo);
         if (result.success) {
             // 创建者自动加入
-            const joinResult = gameRoomService.joinRoom(roomId, socket.id, userInfo);
+            gameRoomService.joinRoom(roomId, socket.id, userInfo);
             socket.join(roomId);
             // 设置默认视角
-            gameRoomService.setPerspective(socket.id, 0);
-            callback({ success: true, room: joinResult.room });
+            const perspResult = gameRoomService.setPerspective(socket.id, 0);
+            // 返回包含最新 perspectives 的房间数据
+            const freshRoom = gameRoomService.getRoom(roomId);
+            callback({ success: true, room: freshRoom });
         } else {
             callback(result);
         }
@@ -78,14 +80,22 @@ io.on('connection', (socket) => {
         if (result.success) {
             socket.join(roomId);
             // 设置默认视角
-            gameRoomService.setPerspective(socket.id, 0);
-            // 通知房间内其他人
+            const perspResult = gameRoomService.setPerspective(socket.id, 0);
+            // 获取最新房间数据（包含 perspectives）
+            const freshRoom = gameRoomService.getRoom(roomId);
+            // 通知房间内其他人（含最新 perspectives）
             socket.to(roomId).emit('room:user-joined', {
                 userId: userInfo.userId,
                 username: userInfo.username,
-                room: result.room
+                room: freshRoom
             });
-            callback({ success: true, room: result.room, gameState: result.gameState, gameConfig: result.gameConfig });
+            // 广播视角更新给所有人（包括自己）
+            if (perspResult) {
+                io.to(roomId).emit('room:perspectives-updated', {
+                    perspectives: perspResult.perspectives
+                });
+            }
+            callback({ success: true, room: freshRoom, gameState: result.gameState, gameConfig: result.gameConfig });
         } else {
             callback(result);
         }
