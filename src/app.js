@@ -1,12 +1,16 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const path = require('path');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const { Server: SocketIO } = require('socket.io');
 const routes = require('./routes/index');
 const serverConfig = require('./config/serverConfig');
+const gameRoomService = require('./services/gameRoom');
 
 const app = express();
+const server = http.createServer(app);
 
 // CORS
 const ORIGINS = serverConfig.corsOrigins;
@@ -38,9 +42,149 @@ app.use((err, _req, res, _next) => {
 
 // Start after DB
 const { port: PORT, dbUrl: DB_URL } = serverConfig;
+
+// ===== Socket.IO =====
+const io = new SocketIO(server, {
+    cors: {
+        origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('Not allowed by CORS')),
+        methods: ['GET', 'POST'],
+        credentials: true
+    }
+});
+
+io.on('connection', (socket) => {
+    console.log(`[Socket.IO] 客户端已连接: ${socket.id}`);
+
+    // 创建房间
+    socket.on('room:create', (data, callback) => {
+        const { roomId, userInfo } = data;
+        const result = gameRoomService.createRoom(roomId, userInfo);
+        if (result.success) {
+            // 创建者自动加入
+            const joinResult = gameRoomService.joinRoom(roomId, socket.id, userInfo);
+            socket.join(roomId);
+            // 设置默认视角
+            gameRoomService.setPerspective(socket.id, 0);
+            callback({ success: true, room: joinResult.room });
+        } else {
+            callback(result);
+        }
+    });
+
+    // 加入房间
+    socket.on('room:join', (data, callback) => {
+        const { roomId, userInfo } = data;
+        const result = gameRoomService.joinRoom(roomId, socket.id, userInfo);
+        if (result.success) {
+            socket.join(roomId);
+            // 设置默认视角
+            gameRoomService.setPerspective(socket.id, 0);
+            // 通知房间内其他人
+            socket.to(roomId).emit('room:user-joined', {
+                userId: userInfo.userId,
+                username: userInfo.username,
+                room: result.room
+            });
+            callback({ success: true, room: result.room, gameState: result.gameState, gameConfig: result.gameConfig });
+        } else {
+            callback(result);
+        }
+    });
+
+    // 离开房间
+    socket.on('room:leave', (callback) => {
+        const result = gameRoomService.leaveRoom(socket.id);
+        if (result) {
+            socket.leave(result.roomId);
+            // 通知房间内其他人
+            const roomInfo = gameRoomService.getRoom(result.roomId);
+            socket.to(result.roomId).emit('room:user-left', {
+                userId: result.userId,
+                username: result.username,
+                room: roomInfo
+            });
+        }
+        if (typeof callback === 'function') callback({ success: true });
+    });
+
+    // 获取房间列表
+    socket.on('room:list', (callback) => {
+        callback(gameRoomService.listRooms());
+    });
+
+    // 切换视角
+    socket.on('room:set-perspective', (data) => {
+        const { perspectiveIndex } = data;
+        const result = gameRoomService.setPerspective(socket.id, perspectiveIndex);
+        if (result) {
+            // 广播视角变化给房间所有人
+            io.to(result.roomId).emit('room:perspectives-updated', {
+                perspectives: result.perspectives
+            });
+        }
+    });
+
+    // 更新游戏配置（房主操作）
+    socket.on('room:update-config', (data) => {
+        const { roomId, config } = data;
+        const result = gameRoomService.updateGameConfig(roomId, config);
+        if (result) {
+            socket.to(roomId).emit('room:config-updated', { config });
+        }
+    });
+
+    // 开始游戏（房主操作）
+    socket.on('room:start-game', (data) => {
+        const { roomId, gameConfig, gameState } = data;
+        gameRoomService.startGame(roomId, gameState);
+        if (gameConfig) gameRoomService.updateGameConfig(roomId, gameConfig);
+        // 广播给房间所有人
+        io.to(roomId).emit('room:game-started', { gameConfig, gameState });
+    });
+
+    // 游戏动作同步（任何用户操作游戏后广播）
+    socket.on('game:action', (data) => {
+        const mapping = gameRoomService.socketToUser.get(socket.id);
+        if (!mapping) return;
+        const { roomId } = mapping;
+        // 广播给房间其他人
+        socket.to(roomId).emit('game:action', {
+            ...data,
+            from: { userId: mapping.userId, username: mapping.username }
+        });
+    });
+
+    // 游戏状态全量同步
+    socket.on('game:sync-state', (data) => {
+        const mapping = gameRoomService.socketToUser.get(socket.id);
+        if (!mapping) return;
+        const { roomId } = mapping;
+        gameRoomService.syncGameState(roomId, data.gameState);
+        // 广播给房间其他人
+        socket.to(roomId).emit('game:state-updated', {
+            gameState: data.gameState,
+            from: { userId: mapping.userId, username: mapping.username }
+        });
+    });
+
+    // 断开连接
+    socket.on('disconnect', () => {
+        console.log(`[Socket.IO] 客户端已断开: ${socket.id}`);
+        const result = gameRoomService.leaveRoom(socket.id);
+        if (result) {
+            const roomInfo = gameRoomService.getRoom(result.roomId);
+            io.to(result.roomId).emit('room:user-left', {
+                userId: result.userId,
+                username: result.username,
+                room: roomInfo
+            });
+        }
+    });
+});
+
 mongoose.connect(DB_URL)
     .then(() => {
         console.log('数据库连接成功');
-        app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
+        server.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
     })
     .catch(err => { console.error('数据库连接失败:', err); process.exit(1); });

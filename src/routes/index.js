@@ -271,14 +271,12 @@ router.post('/username/change', asyncHandler(async (req, res) => {
   const exists = await User.findOne({ username: trimmed, _id: { $ne: user._id } });
   if (exists) return res.status(409).json({ message: '该用户名已被占用' });
 
-  // 若已有 pending 记录，则覆盖新用户名；否则创建
-  let record = await UsernameChange.findOne({ user: userId, status: 'pending' });
-  if (record) {
-    record.newUsername = trimmed;
-    await record.save();
-  } else {
-    record = await UsernameChange.create({ user: userId, newUsername: trimmed });
-  }
+  // 原子 upsert：若已有 pending 记录则覆盖，否则创建
+  const record = await UsernameChange.findOneAndUpdate(
+    { user: userId, status: 'pending' },
+    { $set: { newUsername: trimmed }, $setOnInsert: { user: userId, status: 'pending', createdAt: new Date() } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
   // 通知管理员（用日志代替）
   const admins = await User.find({ role: 'admin' });
@@ -388,14 +386,12 @@ router.post('/intro/change', asyncHandler(async (req, res) => {
     return res.status(200).json({ message: '简介已更新（免审核）', applied: true, intro: user.intro });
   }
 
-  // 若已有 pending 记录，则覆盖；否则创建
-  let record = await IntroChange.findOne({ user: userId, status: 'pending' });
-  if (record) {
-    record.newIntro = normalized;
-    await record.save();
-  } else {
-    record = await IntroChange.create({ user: userId, newIntro: normalized });
-  }
+  // 原子 upsert：若已有 pending 记录则覆盖，否则创建
+  const record = await IntroChange.findOneAndUpdate(
+    { user: userId, status: 'pending' },
+    { $set: { newIntro: normalized }, $setOnInsert: { user: userId, status: 'pending', createdAt: new Date() } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
   // 通知管理员（日志代替）
   const admins = await User.find({ role: 'admin' });
@@ -584,18 +580,16 @@ router.post('/upload/avatar', upload.single('avatar'), async (req, res) => {
       }
     } catch (_) {}
 
-    // 若已有 pending 记录，替换图片并复用该记录；否则创建新记录
-    let record = await AvatarChange.findOne({ user: userId, status: 'pending' });
-    if (record) {
-      const oldUrl = record.url;
-      record.url = relativeUrl;
-      await record.save();
-      // 清理上一张替换下来的待审核图片文件
-      if (oldUrl && oldUrl !== relativeUrl) {
-        await deleteAvatarFileByUrl(oldUrl);
-      }
-    } else {
-      record = await AvatarChange.create({ user: userId, url: relativeUrl });
+    // 原子 upsert：若已有 pending 记录则替换，否则创建
+    const oldRecord = await AvatarChange.findOne({ user: userId, status: 'pending' }).lean();
+    const record = await AvatarChange.findOneAndUpdate(
+      { user: userId, status: 'pending' },
+      { $set: { url: relativeUrl }, $setOnInsert: { user: userId, status: 'pending', createdAt: new Date() } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    // 清理上一张替换下来的待审核图片文件
+    if (oldRecord && oldRecord.url && oldRecord.url !== relativeUrl) {
+      await deleteAvatarFileByUrl(oldRecord.url);
     }
 
     // 通知管理员（日志代替）
