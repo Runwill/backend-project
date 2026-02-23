@@ -48,6 +48,12 @@ class GameRoomService {
             return { success: false, error: '房间不存在' };
         }
 
+        // 如果该 socket 已在其他房间，先自动离开
+        const oldMapping = this.socketToUser.get(socketId);
+        if (oldMapping && oldMapping.roomId !== roomId) {
+            this.leaveRoom(socketId);
+        }
+
         // 记录映射
         this.socketToUser.set(socketId, {
             roomId,
@@ -173,6 +179,33 @@ class GameRoomService {
         if (!room) return null;
         room.gameState = gameState;
         return true;
+    }
+
+    /**
+     * 解散房间（房主专用）
+     * 返回被踢出的所有用户的 socketId 列表
+     */
+    dissolveRoom(roomId, requestUserId) {
+        const room = this.rooms.get(roomId);
+        if (!room) {
+            return { success: false, error: '房间不存在' };
+        }
+        if (room.host !== requestUserId) {
+            return { success: false, error: '只有房主可以解散房间' };
+        }
+
+        // 收集所有需要通知的 socketId
+        const memberSocketIds = [];
+        for (const [userId, data] of room.users) {
+            memberSocketIds.push(data.socketId);
+            // 清除 socketToUser 映射
+            this.socketToUser.delete(data.socketId);
+        }
+
+        // 删除房间
+        this.rooms.delete(roomId);
+
+        return { success: true, memberSocketIds };
     }
 
     /**

@@ -58,6 +58,22 @@ io.on('connection', (socket) => {
     // 创建房间
     socket.on('room:create', (data, callback) => {
         const { roomId, userInfo } = data;
+
+        // 如果已在其他房间，先自动离开（清理 socket room）
+        const oldMapping = gameRoomService.socketToUser.get(socket.id);
+        if (oldMapping) {
+            socket.leave(oldMapping.roomId);
+            const leaveResult = gameRoomService.leaveRoom(socket.id);
+            if (leaveResult) {
+                const oldRoomInfo = gameRoomService.getRoom(leaveResult.roomId);
+                socket.to(leaveResult.roomId).emit('room:user-left', {
+                    userId: leaveResult.userId,
+                    username: leaveResult.username,
+                    room: oldRoomInfo
+                });
+            }
+        }
+
         const result = gameRoomService.createRoom(roomId, userInfo);
         if (result.success) {
             // 创建者自动加入
@@ -76,6 +92,22 @@ io.on('connection', (socket) => {
     // 加入房间
     socket.on('room:join', (data, callback) => {
         const { roomId, userInfo } = data;
+
+        // 如果已在其他房间，先自动离开并通知旧房间成员
+        const oldMapping = gameRoomService.socketToUser.get(socket.id);
+        if (oldMapping && oldMapping.roomId !== roomId) {
+            socket.leave(oldMapping.roomId);
+            const leaveResult = gameRoomService.leaveRoom(socket.id);
+            if (leaveResult) {
+                const oldRoomInfo = gameRoomService.getRoom(leaveResult.roomId);
+                socket.to(leaveResult.roomId).emit('room:user-left', {
+                    userId: leaveResult.userId,
+                    username: leaveResult.username,
+                    room: oldRoomInfo
+                });
+            }
+        }
+
         const result = gameRoomService.joinRoom(roomId, socket.id, userInfo);
         if (result.success) {
             socket.join(roomId);
@@ -120,6 +152,29 @@ io.on('connection', (socket) => {
     // 获取房间列表
     socket.on('room:list', (callback) => {
         callback(gameRoomService.listRooms());
+    });
+
+    // 解散房间（房主专用）
+    socket.on('room:dissolve', (data, callback) => {
+        const { roomId } = data;
+        const mapping = gameRoomService.socketToUser.get(socket.id);
+        if (!mapping) {
+            if (typeof callback === 'function') callback({ success: false, error: '未在任何房间中' });
+            return;
+        }
+
+        const result = gameRoomService.dissolveRoom(roomId, mapping.userId);
+        if (result.success) {
+            // 通知房间内所有人房间已解散
+            io.to(roomId).emit('room:dissolved', { roomId });
+            // 让所有成员的 socket 离开房间
+            result.memberSocketIds.forEach(sid => {
+                const s = io.sockets.sockets.get(sid);
+                if (s) s.leave(roomId);
+            });
+            console.log(`[Room] 房间 ${roomId} 已被房主解散`);
+        }
+        if (typeof callback === 'function') callback(result);
     });
 
     // 切换视角
