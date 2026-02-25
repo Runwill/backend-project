@@ -29,6 +29,8 @@ class GameRoomService {
             gameStarted: false,
             // 序列化的游戏状态（由客户端同步）
             gameState: null,
+            // 是否允许旁观（默认允许）
+            allowSpectate: true,
             // 房间内的用户列表: userId -> { username, socketId, perspectiveIndex }
             users: new Map(),
             // 视角映射: perspectiveIndex -> [{ userId, username }]
@@ -219,10 +221,23 @@ class GameRoomService {
                 host: room.host,
                 userCount: room.users.size,
                 gameStarted: room.gameStarted,
-                createdAt: room.createdAt
+                createdAt: room.createdAt,
+                allowSpectate: room.allowSpectate
             });
         }
         return list;
+    }
+
+    /**
+     * 更新房间选项
+     */
+    updateRoomOption(roomId, key, value) {
+        const room = this.rooms.get(roomId);
+        if (!room) return null;
+        if (key === 'allowSpectate') {
+            room.allowSpectate = !!value;
+        }
+        return { roomId, key, value: room[key] };
     }
 
     /**
@@ -251,6 +266,7 @@ class GameRoomService {
             createdAt: room.createdAt,
             gameStarted: room.gameStarted,
             gameConfig: room.gameConfig,
+            allowSpectate: room.allowSpectate,
             users,
             perspectives: room.perspectives
         };

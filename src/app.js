@@ -177,6 +177,17 @@ io.on('connection', (socket) => {
         if (typeof callback === 'function') callback(result);
     });
 
+    // 更新房间选项（如允许旁观）
+    socket.on('room:update-option', (data) => {
+        const mapping = gameRoomService.socketToUser.get(socket.id);
+        if (!mapping) return;
+        const result = gameRoomService.updateRoomOption(mapping.roomId, data.key, data.value);
+        if (result) {
+            // 广播给房间所有人（包括自己）
+            io.to(mapping.roomId).emit('room:option-updated', { key: data.key, value: result.value });
+        }
+    });
+
     // 切换视角
     socket.on('room:set-perspective', (data) => {
         const { perspectiveIndex } = data;
