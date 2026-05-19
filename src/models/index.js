@@ -174,10 +174,14 @@ const tokenLogSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     username: { type: String },
     sourceId: { type: String },
+    deleted: { type: Boolean, default: false },
+    deletedAt: { type: Date },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdAt: { type: Date, default: Date.now }
 });
 tokenLogSchema.index({ createdAt: 1 });
 tokenLogSchema.index({ collection: 1, docId: 1, createdAt: 1 });
+tokenLogSchema.index({ deleted: 1, createdAt: -1 });
 
 const TokenLog = mongoose.model('TokenLog', tokenLogSchema);
 
@@ -205,10 +209,14 @@ const userLogSchema = new mongoose.Schema({
     message: { type: String }, // 可选的简单说明
     data: { type: mongoose.Schema.Types.Mixed }, // 附加数据，如 { grant:['赞拜不名'], revoke:[] }
     sourceId: { type: String }, // 客户端标识
+    deleted: { type: Boolean, default: false },
+    deletedAt: { type: Date },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdAt: { type: Date, default: Date.now }
 });
 userLogSchema.index({ createdAt: -1 });
 userLogSchema.index({ userId: 1, createdAt: -1 });
+userLogSchema.index({ deleted: 1, createdAt: -1 });
 
 const UserLog = mongoose.model('UserLog', userLogSchema);
 

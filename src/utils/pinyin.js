@@ -91,19 +91,22 @@ async function attachAggregatePinyin(docs, opts = {}) {
     return docs;
   }
   const conv = await runPythonPinyin(allTexts);
-  const agg = new Array(docs.length).fill(0).map(() => ({ fulls: [] }));
+  const agg = new Array(docs.length).fill(0).map(() => ({ fulls: [], abbrs: [] }));
   conv.forEach((r, i) => {
     const di = idx[i];
     if (di == null || di < 0) return;
     const bucket = agg[di];
     if (!bucket) return;
     const full = r && r.full ? String(r.full) : '';
+    const abbr = r && r.abbr ? String(r.abbr) : '';
     if (full) bucket.fulls.push(full);
+    if (abbr) bucket.abbrs.push(abbr);
   });
   agg.forEach((b, di) => {
     const d = docs[di];
     if (!d || !b) return;
-    d.py = b.fulls.join(' ');
+    d.py = b.fulls.concat(b.abbrs).join(' ');
+    d.pyAbbr = b.abbrs.join(' ');
   });
   if (process.env.DEBUG_PINYIN) { try { console.log('[pinyin] aggregate done, sample:', docs?.[0] && { py: docs[0].py }); } catch{} }
   return docs;

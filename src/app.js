@@ -16,7 +16,7 @@ const server = http.createServer(app);
 const ORIGINS = serverConfig.corsOrigins;
 const corsOptions = {
     origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error('Not allowed by CORS')),
-    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+    methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
     allowedHeaders: ['Content-Type','Authorization','x-requested-with','x-client-id'],
     credentials: true,
 };

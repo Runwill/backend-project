@@ -50,6 +50,24 @@ function pickBrief(docLike) {
   } catch (_) { return {}; }
 }
 
+function wantsDeletedLogs(req) {
+  const value = String(req.query.includeDeleted || req.query.withDeleted || '').toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'all';
+}
+
+function wantsOnlyDeletedLogs(req) {
+  const value = String(req.query.deletedOnly || req.query.onlyDeleted || '').toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+function logDeleteFields(req) {
+  return {
+    deleted: true,
+    deletedAt: new Date(),
+    ...(req?.user?.id && { deletedBy: req.user.id })
+  };
+}
+
 // 统一的 Token 日志记录 + 广播（失败静默）
 function logToken(type, collection, docId, payload, req) {
   try {
@@ -794,7 +812,7 @@ router.post('/tokens/create', auth, requireAdmin, asyncHandler(async (req, res) 
       if (Array.isArray(obj)) return obj.map(sanitize);
       const out = {};
       for (const k of Object.keys(obj)) {
-        if (k === '_id' || k === '__v' || k === '_v' || k === 'py') continue;
+        if (k === '_id' || k === '__v' || k === '_v' || k === 'py' || k === 'pyAbbr') continue;
         out[k] = sanitize(obj[k]);
       }
       return out;
@@ -851,6 +869,8 @@ router.get('/tokens/logs', auth, asyncHandler(async (req, res) => {
     ...(req.query.collection && { collection: String(req.query.collection) }),
     ...(req.query.docId && { docId: String(req.query.docId) })
   };
+  if (wantsOnlyDeletedLogs(req)) q.deleted = true;
+  else if (!wantsDeletedLogs(req)) q.deleted = { $ne: true };
   if (req.query.since || req.query.until) {
     q.createdAt = {};
     if (req.query.since) q.createdAt.$gte = new Date(req.query.since);
@@ -871,6 +891,8 @@ router.get('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) => {
     const ps = Math.min(500, Math.max(1, parseInt(req.query.pageSize, 10) || 100));
     const q = {};
     if (req.query.userId) q.userId = String(req.query.userId);
+    if (wantsOnlyDeletedLogs(req)) q.deleted = true;
+    else if (!wantsDeletedLogs(req)) q.deleted = { $ne: true };
 
     // 类型过滤（逗号分隔）
     if (req.query.types) {
@@ -922,13 +944,13 @@ router.get('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) => {
 // 删除用户日志（仅管理员）：可选按 userId 删除
 router.delete('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) => {
   try {
-    if (!UserLog || typeof UserLog.deleteMany !== 'function') {
+    if (!UserLog || typeof UserLog.updateMany !== 'function') {
       return res.status(200).json({ message: '已清空', deleted: 0 });
     }
-    const q = {};
+    const q = { deleted: { $ne: true } };
     if (req.query.userId) q.userId = String(req.query.userId);
-    const r = await UserLog.deleteMany(q);
-    const deleted = (r && (r.deletedCount || r.n)) || 0;
+    const r = await UserLog.updateMany(q, { $set: logDeleteFields(req) });
+    const deleted = (r && (r.modifiedCount || r.nModified || r.n)) || 0;
     return res.status(200).json({ message: '已清空', deleted });
   } catch (e) {
     console.error('DELETE /user/logs failed:', e && e.message);
@@ -940,24 +962,34 @@ router.delete('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) =>
 router.delete('/user/logs/:id', auth, requireAdmin, asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!id) return res.status(400).json({ message: '缺少日志ID' });
-  const log = await UserLog.findByIdAndDelete(id);
+  const log = await UserLog.findOneAndUpdate({ _id: id, deleted: { $ne: true } }, { $set: logDeleteFields(req) }, { new: true });
   if (!log) return res.status(404).json({ message: '日志不存在' });
   return res.status(200).json({ message: '删除成功' });
 }, { logLabel: 'DELETE /user/logs/:id' }));
+
+// 恢复一条用户日志（仅管理员）
+router.patch('/user/logs/:id/restore', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ message: '缺少日志ID' });
+  const log = await UserLog.findOneAndUpdate({ _id: id, deleted: true }, { $set: { deleted: false }, $unset: { deletedAt: '', deletedBy: '' } }, { new: true });
+  if (!log) return res.status(404).json({ message: '日志不存在或未删除' });
+  return res.status(200).json({ message: '恢复成功' });
+}, { logLabel: 'PATCH /user/logs/:id/restore' }));
 
 // 批量删除词元日志（仅管理员）：可选按筛选条件删除
 router.delete('/tokens/logs', auth, requireAdmin, asyncHandler(async (req, res) => {
   const q = {
     ...(req.query.collection && { collection: String(req.query.collection) }),
-    ...(req.query.docId && { docId: String(req.query.docId) })
+    ...(req.query.docId && { docId: String(req.query.docId) }),
+    deleted: { $ne: true }
   };
   if (req.query.since || req.query.until) {
     q.createdAt = {};
     if (req.query.since) q.createdAt.$gte = new Date(req.query.since);
     if (req.query.until) q.createdAt.$lte = new Date(req.query.until);
   }
-  const r = await TokenLog.deleteMany(q);
-  const deleted = (r && (r.deletedCount || r.n)) || 0;
+  const r = await TokenLog.updateMany(q, { $set: logDeleteFields(req) });
+  const deleted = (r && (r.modifiedCount || r.nModified || r.n)) || 0;
   return res.status(200).json({ message: '已清空', deleted });
 }, { logLabel: 'DELETE /tokens/logs' }));
 
@@ -965,10 +997,19 @@ router.delete('/tokens/logs', auth, requireAdmin, asyncHandler(async (req, res) 
 router.delete('/tokens/logs/:id', auth, requireAdmin, asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!id) return res.status(400).json({ message: '缺少日志ID' });
-  const log = await TokenLog.findByIdAndDelete(id);
+  const log = await TokenLog.findOneAndUpdate({ _id: id, deleted: { $ne: true } }, { $set: logDeleteFields(req) }, { new: true });
   if (!log) return res.status(404).json({ message: '日志不存在' });
   return res.status(200).json({ message: '删除成功' });
 }, { logLabel: 'DELETE /tokens/logs/:id' }));
+
+// 恢复一条词元日志（仅管理员）
+router.patch('/tokens/logs/:id/restore', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ message: '缺少日志ID' });
+  const log = await TokenLog.findOneAndUpdate({ _id: id, deleted: true }, { $set: { deleted: false }, $unset: { deletedAt: '', deletedBy: '' } }, { new: true });
+  if (!log) return res.status(404).json({ message: '日志不存在或未删除' });
+  return res.status(200).json({ message: '恢复成功' });
+}, { logLabel: 'PATCH /tokens/logs/:id/restore' }));
 
 // 获取文档简要（用于日志标签兜底）：返回 { en, cn, name, id }
 router.get('/tokens/brief', asyncHandler(async (req, res) => {
