@@ -4,7 +4,7 @@ const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange, UserLog } = require('../models/index');
+const { User, Character, Card, TermDynamic, TermFixed, Skill, ProgramPanel, AvatarChange, UsernameChange, TokenLog, IntroChange, UserLog } = require('../models/index');
 const { PERMISSIONS } = require('../config/permissions');
 const { listWithPinyin } = require('../services/listWithPinyin');
 const { attachAggregatePinyin } = require('../utils/pinyin');
@@ -149,6 +149,120 @@ function requireRole(allowedRoles) {
 // 角色别名中间件（兼容原有命名）
 const requireReviewer = requireRole(['admin', 'moderator']);
 const requireAdmin = requireRole(['admin']);
+
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function plainSubdoc(value) {
+  if (value && typeof value.toObject === 'function') return value.toObject({ depopulate: true });
+  return clonePlain(value);
+}
+
+function sanitizeProgramPanelItem(kind, current, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw Object.assign(new Error('数据必须是对象'), { status: 400 });
+  }
+  const out = clonePlain(current || {});
+  const source = clonePlain(value);
+  delete source._id;
+  delete source.__v;
+  delete source.id;
+  const allowed = kind === 'section'
+    ? new Set(['level', 'title', 'attrs', 'order'])
+    : new Set(['section', 'order', 'kind', 'attrs', 'content']);
+  for (const key of Object.keys(source)) {
+    if (allowed.has(key)) out[key] = source[key];
+  }
+  if (kind === 'section') {
+    const level = Number(out.level);
+    if (![1, 2, 3, 4, 5, 6].includes(level)) throw Object.assign(new Error('标题层级无效'), { status: 400 });
+    out.level = level;
+    if (!Array.isArray(out.title)) throw Object.assign(new Error('标题内容必须是数组'), { status: 400 });
+  } else {
+    if (typeof out.section !== 'string' || !out.section) throw Object.assign(new Error('所属 section 无效'), { status: 400 });
+    if (!Array.isArray(out.content)) throw Object.assign(new Error('正文内容必须是数组'), { status: 400 });
+    out.order = Number(out.order);
+    if (!Number.isFinite(out.order)) throw Object.assign(new Error('排序值无效'), { status: 400 });
+    out.kind = out.kind || 'rich_text';
+  }
+  if (out.attrs != null && (typeof out.attrs !== 'object' || Array.isArray(out.attrs))) {
+    throw Object.assign(new Error('attrs 必须是对象'), { status: 400 });
+  }
+  out.id = current.id;
+  return out;
+}
+
+function normalizeProgramPanelKind(kind) {
+  if (kind === 'section') return 'heading';
+  if (kind === 'statement') return 'body';
+  return kind;
+}
+
+function legacyProgramPanelKind(kind) {
+  if (kind === 'heading') return 'section';
+  if (kind === 'body') return 'statement';
+  return kind;
+}
+
+function findProgramPanelTreeNode(root, kind, nodeId) {
+  const wantedType = kind === 'heading' ? 'term_heading' : kind;
+  const target = String(nodeId || '');
+  function visit(node, path) {
+    if (!node) return null;
+    if (node.type === wantedType && String(node._id || '') === target) return { node, path };
+    const children = Array.isArray(node.children) ? node.children : [];
+    for (let index = 0; index < children.length; index++) {
+      const found = visit(children[index], path.concat(['children', index]));
+      if (found) return found;
+    }
+    return null;
+  }
+  return visit(root, ['tree']);
+}
+
+function sanitizeProgramPanelTreeNode(kind, current, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw Object.assign(new Error('数据必须是对象'), { status: 400 });
+  }
+  const out = plainSubdoc(current || {});
+  const source = clonePlain(value);
+  delete source._id;
+  delete source.__v;
+  delete source.id;
+  delete source.children;
+  delete source.type;
+  const allowed = kind === 'heading'
+    ? new Set(['level', 'title', 'attrs', 'term', 'terms'])
+    : new Set(['variant', 'attrs', 'content']);
+  for (const key of Object.keys(source)) {
+    if (allowed.has(key)) out[key] = source[key];
+  }
+  if (kind === 'heading') {
+    const level = Number(out.level);
+    if (![1, 2, 3, 4, 5, 6].includes(level)) throw Object.assign(new Error('标题层级无效'), { status: 400 });
+    out.level = level;
+    if (!Array.isArray(out.title)) throw Object.assign(new Error('标题内容必须是数组'), { status: 400 });
+    if (out.terms != null && !Array.isArray(out.terms)) throw Object.assign(new Error('术语关联必须是数组'), { status: 400 });
+  } else {
+    if (!Array.isArray(out.content)) throw Object.assign(new Error('正文内容必须是数组'), { status: 400 });
+    out.variant = out.variant || 'rich_text';
+  }
+  if (out.attrs != null && (typeof out.attrs !== 'object' || Array.isArray(out.attrs))) {
+    throw Object.assign(new Error('attrs 必须是对象'), { status: 400 });
+  }
+  return out;
+}
+
+function programPanelResponse(doc, includeDebug) {
+  const { panelId, version, source, renderer, concepts = [], sections = [], statements = [], tree, view, updatedAt } = doc;
+  const payload = { version, source, renderer, concepts };
+  if (tree) payload.tree = tree;
+  else Object.assign(payload, { sections, statements, view });
+  if (view && !payload.view) payload.view = view;
+  if (includeDebug) Object.assign(payload, { panelId, updatedAt });
+  return payload;
+}
 
 // 登录方法
 router.post('/login', asyncHandler(async (req, res) => {
@@ -514,6 +628,70 @@ registerListRoute('/skill', Skill, '获取技能失败', (req) => {
   }
   return { strength: n };
 });
+
+router.get('/program-panel', asyncHandler(async (req, res) => {
+  const panelId = String(req.query.id || 'panel_term').trim() || 'panel_term';
+  const doc = await ProgramPanel.findOne({ panelId }).lean();
+  if (!doc) return res.status(404).json({ message: '程序页数据不存在' });
+  return res.status(200).json(programPanelResponse(doc, false));
+}, { logLabel: 'GET /program-panel' }));
+
+router.get('/program-panel/debug', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const panelId = String(req.query.id || 'panel_term').trim() || 'panel_term';
+  const doc = await ProgramPanel.findOne({ panelId }).lean();
+  if (!doc) return res.status(404).json({ message: '程序页数据不存在' });
+  return res.status(200).json(programPanelResponse(doc, true));
+}, { logLabel: 'GET /program-panel/debug' }));
+
+router.patch('/program-panel/debug', auth, requireAdmin, asyncHandler(async (req, res) => {
+  const panelId = String(req.body?.panelId || 'panel_term').trim() || 'panel_term';
+  const requestedKind = String(req.body?.kind || '').trim();
+  const kind = normalizeProgramPanelKind(requestedKind);
+  const itemId = String(req.body?.itemId || '').trim();
+  const nodeId = String(req.body?.nodeId || itemId).trim();
+  const value = req.body?.value;
+  if (!['heading', 'body'].includes(kind) || !nodeId) {
+    return res.status(400).json({ message: '参数无效' });
+  }
+  const doc = await ProgramPanel.findOne({ panelId });
+  if (!doc) return res.status(404).json({ message: '程序页数据不存在' });
+
+  if (doc.tree) {
+    const found = findProgramPanelTreeNode(doc.tree, kind, nodeId);
+    if (!found) return res.status(404).json({ message: '条目不存在' });
+    let nextItem;
+    try {
+      nextItem = sanitizeProgramPanelTreeNode(kind, found.node, value);
+    } catch (err) {
+      return res.status(400).json({ message: err?.message || '数据无效' });
+    }
+    const prevItem = plainSubdoc(found.node);
+    found.node.set(nextItem);
+    doc.markModified('tree');
+    await doc.save();
+    const savedItem = plainSubdoc(found.node);
+    logToken('update', 'program-panel', nodeId, { path: found.path.join('.'), value: savedItem, from: prevItem, doc: { id: panelId } }, req);
+    return res.status(200).json({ message: '更新成功', panelId, kind, item: savedItem });
+  }
+
+  const legacyKind = legacyProgramPanelKind(kind);
+  const field = legacyKind === 'section' ? 'sections' : 'statements';
+  const arr = Array.isArray(doc[field]) ? doc[field] : [];
+  const index = arr.findIndex(item => item && item.id === itemId);
+  if (index < 0) return res.status(404).json({ message: '条目不存在' });
+  let nextItem;
+  try {
+    nextItem = sanitizeProgramPanelItem(legacyKind, arr[index], value);
+  } catch (err) {
+    return res.status(400).json({ message: err?.message || '数据无效' });
+  }
+  const prevItem = clonePlain(arr[index]);
+  doc[field][index] = nextItem;
+  doc.markModified(field);
+  await doc.save();
+  logToken('update', 'program-panel', itemId, { path: `${field}.${index}`, value: nextItem, from: prevItem, doc: { id: panelId } }, req);
+  return res.status(200).json({ message: '更新成功', panelId, kind: legacyKind, item: nextItem });
+}, { logLabel: 'PATCH /program-panel/debug' }));
 
 // 根据技能名获取所有强度版本（保留原逻辑）
 router.get('/skill/:name', asyncHandler(async (req, res) => {

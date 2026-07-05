@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "migrate:replace": "node scripts/migrate-term-fixed-replace.js"
+    "migrate:replace": "node scripts/migrate-term-fixed-replace.js",
+    "import:program-panel": "node scripts/import-program-panel.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

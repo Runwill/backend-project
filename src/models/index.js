@@ -126,6 +126,39 @@ const skillSchema = new mongoose.Schema({
 // 创建复合唯一索引：strength + name 的组合必须唯一
 skillSchema.index({ strength: 1, name: 1 }, { unique: true });
 
+const programPanelNodeSchema = new mongoose.Schema({
+    type: { type: String, required: true },
+    tag: { type: String },
+    level: { type: Number },
+    term: { type: String },
+    terms: { type: [String], default: undefined },
+    variant: { type: String },
+    attrs: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    title: { type: [mongoose.Schema.Types.Mixed], default: undefined },
+    content: { type: [mongoose.Schema.Types.Mixed], default: undefined }
+}, { _id: true, strict: false, minimize: false });
+
+programPanelNodeSchema.add({
+    children: { type: [programPanelNodeSchema], default: undefined }
+});
+
+const programPanelSchema = new mongoose.Schema({
+    panelId: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true
+    },
+    version: { type: Number, required: true },
+    source: { type: String, required: true },
+    renderer: { type: String, required: true },
+    concepts: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    sections: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    statements: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    tree: { type: programPanelNodeSchema, default: undefined },
+    view: { type: mongoose.Schema.Types.Mixed, required: true }
+}, { timestamps: true, minimize: false });
+
 // 头像审核记录（待审核/已通过/已拒绝）
 const avatarChangeSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -145,6 +178,7 @@ const Card = mongoose.model('Card', cardSchema);
 const TermDynamic = mongoose.model('TermDynamic', termDynamicSchema);
 const TermFixed = mongoose.model('TermFixed', termFixedSchema);
 const Skill = mongoose.model('Skill', skillSchema);
+const ProgramPanel = mongoose.model('ProgramPanel', programPanelSchema);
 const AvatarChange = mongoose.model('AvatarChange', avatarChangeSchema);
 
 // 用户名修改审核记录（待审核/已通过/已拒绝）
@@ -220,4 +254,4 @@ userLogSchema.index({ deleted: 1, createdAt: -1 });
 
 const UserLog = mongoose.model('UserLog', userLogSchema);
 
-module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, AvatarChange, UsernameChange, TokenLog, IntroChange, UserLog };
+module.exports = { User, Character, Card, TermDynamic, TermFixed, Skill, ProgramPanel, AvatarChange, UsernameChange, TokenLog, IntroChange, UserLog };
