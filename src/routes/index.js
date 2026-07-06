@@ -264,6 +264,243 @@ function programPanelResponse(doc, includeDebug) {
   return payload;
 }
 
+function uniqueStrings(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const key = String(value == null ? '' : value).trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function tokenSemantic(collection, doc) {
+  if (!doc) return { targetType: '', key: '', label: '' };
+  if (collection === 'term-fixed' || collection === 'term-dynamic') {
+    const key = String(doc.en || '').trim();
+    return { targetType: 'term', key, label: doc.cn || doc.replace || key };
+  }
+  if (collection === 'card') {
+    const key = String(doc.en || '').trim();
+    return { targetType: 'card', key, label: doc.cn || key };
+  }
+  if (collection === 'character') {
+    const key = doc.id == null ? '' : String(doc.id).trim();
+    return { targetType: 'character', key, label: doc.name || key };
+  }
+  if (collection === 'skill') {
+    const key = String(doc.name || '').trim();
+    return { targetType: 'skill', key, label: key };
+  }
+  return { targetType: '', key: '', label: '' };
+}
+
+function tokenLocator(collection, doc, semantic) {
+  if (!semantic || !semantic.key) return null;
+  if (semantic.targetType === 'term') return { panelId: 'panel_term', method: 'tag', key: semantic.key };
+  if (collection === 'card') return { panelId: 'panel_card', method: 'selector', selector: semantic.key + '.scroll' };
+  if (collection === 'character') return { panelId: 'panel_character', method: 'classWithCenter', className: 'characterID' + semantic.key, centerSelector: '.container' };
+  if (collection === 'skill') return { panelId: 'panel_skill', method: 'class', className: semantic.key };
+  return null;
+}
+
+function programNodeTerms(node) {
+  if (!node || typeof node !== 'object') return [];
+  const keys = [];
+  if (node.term) keys.push(node.term);
+  if (Array.isArray(node.terms)) keys.push(...node.terms);
+  const anchor = node.anchor;
+  if (anchor && typeof anchor === 'object') {
+    const target = anchor.targetType || anchor.type || anchor.kind;
+    if (!target || target === 'term') {
+      if (anchor.key) keys.push(anchor.key);
+      if (Array.isArray(anchor.keys)) keys.push(...anchor.keys);
+      if (Array.isArray(anchor.terms)) keys.push(...anchor.terms);
+    }
+  }
+  return uniqueStrings(keys);
+}
+
+function programSubjectFromTerms(terms) {
+  const keys = uniqueStrings(terms);
+  if (!keys.length) return null;
+  return {
+    type: 'term',
+    key: keys[0],
+    keys,
+    source: 'program-panel-scroll-tag'
+  };
+}
+
+function programSubjectLogFields(subject) {
+  if (!subject || !subject.type || !subject.key) return {};
+  const keys = uniqueStrings(subject.keys && subject.keys.length ? subject.keys : [subject.key]);
+  return {
+    subject,
+    subjectType: subject.type,
+    subjectKey: subject.key,
+    subjectKeys: keys
+  };
+}
+
+function collectProgramNodeIds(nodes) {
+  const ids = [];
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node._id) ids.push(String(node._id));
+    if (node.id) ids.push(String(node.id));
+    (node.children || []).forEach(visit);
+  }
+  (Array.isArray(nodes) ? nodes : [nodes]).forEach(visit);
+  return uniqueStrings(ids);
+}
+
+function cloneProgramNodes(nodes) {
+  return clonePlain(Array.isArray(nodes) ? nodes : [nodes]);
+}
+
+function collectProgramTermEntries(panelDoc, key) {
+  const wanted = String(key || '').trim().toLowerCase();
+  if (!wanted) return [];
+  const out = [];
+
+  function hasWantedTerm(node) {
+    return programNodeTerms(node).some(term => String(term).toLowerCase() === wanted);
+  }
+
+  function readEntryHeading(node) {
+    if (!node || typeof node !== 'object') return null;
+    if (node.type === 'term_entry' && node.heading) return node.heading;
+    return node;
+  }
+
+  function scanSiblings(nodes, path) {
+    const list = Array.isArray(nodes) ? nodes : [];
+    for (let index = 0; index < list.length; index++) {
+      const node = list[index];
+      if (!node || typeof node !== 'object') continue;
+
+      if (node.type === 'term_entry' && hasWantedTerm(node)) {
+        const entryNodes = [];
+        if (node.heading) entryNodes.push(node.heading);
+        if (Array.isArray(node.children)) entryNodes.push(...node.children);
+        out.push({
+          kind: 'term_entry',
+          key,
+          terms: programNodeTerms(node),
+          heading: clonePlain(readEntryHeading(node)),
+          nodes: cloneProgramNodes(entryNodes.length ? entryNodes : [node]),
+          nodeIds: collectProgramNodeIds(entryNodes.length ? entryNodes : [node]),
+          path: path.concat(index).join('.')
+        });
+      }
+
+      if (node.type === 'term_heading' && hasWantedTerm(node)) {
+        const level = Number(node.level || 3);
+        const entryNodes = [node];
+        for (let next = index + 1; next < list.length; next++) {
+          const sibling = list[next];
+          if (sibling && sibling.type === 'term_heading' && Number(sibling.level || 3) <= level) break;
+          entryNodes.push(sibling);
+        }
+        out.push({
+          kind: 'term_heading',
+          key,
+          terms: programNodeTerms(node),
+          heading: clonePlain(node),
+          nodes: cloneProgramNodes(entryNodes),
+          nodeIds: collectProgramNodeIds(entryNodes),
+          path: path.concat(index).join('.')
+        });
+      }
+
+      if (Array.isArray(node.children)) scanSiblings(node.children, path.concat(index, 'children'));
+    }
+  }
+
+  if (panelDoc?.tree?.children) scanSiblings(panelDoc.tree.children, ['tree', 'children']);
+  return out;
+}
+
+function treePathFrames(root, path) {
+  const frames = [];
+  if (!root || !Array.isArray(path)) return frames;
+  let current = root;
+  for (let i = 1; i < path.length; i += 2) {
+    if (path[i] !== 'children') break;
+    const siblings = Array.isArray(current.children) ? current.children : [];
+    const index = Number(path[i + 1]);
+    if (!Number.isInteger(index) || index < 0 || index >= siblings.length) break;
+    current = siblings[index];
+    frames.push({ siblings, index, node: current });
+  }
+  return frames;
+}
+
+function resolveProgramPanelSubject(root, found) {
+  if (!root || !found) return null;
+  const direct = programSubjectFromTerms(programNodeTerms(found.node));
+  if (direct) return direct;
+  const frames = treePathFrames(root, found.path);
+  for (let frameIndex = frames.length - 1; frameIndex >= 0; frameIndex--) {
+    const frame = frames[frameIndex];
+    for (let index = frame.index; index >= 0; index--) {
+      const sibling = frame.siblings[index];
+      if (!sibling || sibling.type !== 'term_heading') continue;
+      const subject = programSubjectFromTerms(programNodeTerms(sibling));
+      if (subject) return subject;
+    }
+  }
+  return null;
+}
+
+async function semanticPeers(collection, semantic, currentId) {
+  if (!semantic || !semantic.key) return [];
+  const key = String(semantic.key);
+  const peers = [];
+  if (semantic.targetType === 'term') {
+    const [fixed, dynamic] = await Promise.all([
+      TermFixed.find({ en: key }).select('en cn replace _id').lean(),
+      TermDynamic.find({ en: key }).select('en _id').lean()
+    ]);
+    for (const doc of fixed || []) peers.push({ collection: 'term-fixed', id: String(doc._id), label: doc.cn || doc.replace || doc.en, current: String(doc._id) === String(currentId) });
+    for (const doc of dynamic || []) peers.push({ collection: 'term-dynamic', id: String(doc._id), label: doc.en, current: String(doc._id) === String(currentId) });
+  } else if (semantic.targetType === 'skill') {
+    const skills = await Skill.find({ name: key }).select('name strength _id').sort({ strength: 1 }).lean();
+    for (const doc of skills || []) peers.push({ collection: 'skill', id: String(doc._id), label: doc.name, strength: doc.strength, current: String(doc._id) === String(currentId) });
+  }
+  return peers;
+}
+
+async function buildTokenRelated(collection, semantic) {
+  if (!semantic || semantic.targetType !== 'term' || !semantic.key) {
+    return { type: semantic?.targetType || '', key: semantic?.key || '', status: 'locator-only' };
+  }
+  const panelId = 'panel_term';
+  const panelDoc = await ProgramPanel.findOne({ panelId }).lean();
+  if (!panelDoc) return { type: 'program-term', key: semantic.key, panelId, status: 'missing-panel', matches: [], logs: [] };
+
+  const matches = collectProgramTermEntries(panelDoc, semantic.key);
+  const nodeIds = uniqueStrings(matches.flatMap(match => match.nodeIds || []));
+  const or = [
+    { collection: 'program-panel', subjectType: 'term', subjectKey: semantic.key },
+    { collection: 'program-panel', subjectType: 'term', subjectKeys: semantic.key }
+  ];
+  if (nodeIds.length) or.push({ collection: 'program-panel', docId: { $in: nodeIds } });
+  const logs = await TokenLog.find({ $or: or, deleted: { $ne: true } }).sort({ createdAt: -1 }).limit(120).lean();
+
+  return {
+    type: 'program-term',
+    key: semantic.key,
+    panelId,
+    status: matches.length > 1 ? 'conflict' : matches.length === 1 ? 'matched' : 'none',
+    matches,
+    logs
+  };
+}
+
 // 登录方法
 router.post('/login', asyncHandler(async (req, res) => {
   const { username, password } = req.body;
@@ -670,7 +907,14 @@ router.patch('/program-panel/debug', auth, requireAdmin, asyncHandler(async (req
     doc.markModified('tree');
     await doc.save();
     const savedItem = plainSubdoc(found.node);
-    logToken('update', 'program-panel', nodeId, { path: found.path.join('.'), value: savedItem, from: prevItem, doc: { id: panelId } }, req);
+    const subject = resolveProgramPanelSubject(doc.tree, found);
+    logToken('update', 'program-panel', nodeId, {
+      path: found.path.join('.'),
+      value: savedItem,
+      from: prevItem,
+      doc: { id: panelId, subject },
+      ...programSubjectLogFields(subject)
+    }, req);
     return res.status(200).json({ message: '更新成功', panelId, kind, item: savedItem });
   }
 
@@ -1058,6 +1302,41 @@ router.get('/tokens/logs', auth, asyncHandler(async (req, res) => {
   const list = await TokenLog.find(q).sort({ createdAt: -1 }).skip((p - 1) * ps).limit(ps).lean();
   return res.status(200).json({ page: p, pageSize: ps, total, list });
 }, { logLabel: 'GET /tokens/logs' }));
+
+// 词元详情：词元本体 + 语义定位 + 词元日志 + 关联内容日志
+router.get('/tokens/detail', auth, asyncHandler(async (req, res) => {
+  const collection = String(req.query.collection || '').trim();
+  const id = String(req.query.id || '').trim();
+  if (!collection || !id) return res.status(400).json({ message: '缺少参数' });
+  if (!/^[0-9a-fA-F]{24}$/.test(id)) return res.status(400).json({ message: 'ID 无效' });
+  const Model = modelMap[collection];
+  if (!Model) return res.status(400).json({ message: '未知集合' });
+  const doc = await Model.findById(id).lean();
+  if (!doc) return res.status(404).json({ message: '文档不存在' });
+
+  const semantic = tokenSemantic(collection, doc);
+  const [tokenLogs, peers, related] = await Promise.all([
+    TokenLog.find({ collection, docId: id, deleted: { $ne: true } }).sort({ createdAt: -1 }).limit(120).lean(),
+    semanticPeers(collection, semantic, id),
+    buildTokenRelated(collection, semantic)
+  ]);
+
+  return res.status(200).json({
+    collection,
+    id,
+    token: doc,
+    semantic: {
+      ...semantic,
+      locator: tokenLocator(collection, doc, semantic),
+      peers
+    },
+    logs: {
+      token: tokenLogs,
+      related: Array.isArray(related?.logs) ? related.logs : []
+    },
+    related
+  });
+}, { logLabel: 'GET /tokens/detail' }));
 
 // === 用户日志：分页拉取 ===
 router.get('/user/logs', auth, requireAdmin, asyncHandler(async (req, res) => {

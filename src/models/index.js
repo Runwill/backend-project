@@ -205,6 +205,10 @@ const tokenLogSchema = new mongoose.Schema({
     value: { type: mongoose.Schema.Types.Mixed },
     from: { type: mongoose.Schema.Types.Mixed },
     doc: { type: mongoose.Schema.Types.Mixed }, // create 时的简要对象（只含 en/cn/name/id 等）
+    subjectType: { type: String },
+    subjectKey: { type: String },
+    subjectKeys: { type: [String], default: undefined },
+    subject: { type: mongoose.Schema.Types.Mixed },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     username: { type: String },
     sourceId: { type: String },
@@ -215,6 +219,8 @@ const tokenLogSchema = new mongoose.Schema({
 });
 tokenLogSchema.index({ createdAt: 1 });
 tokenLogSchema.index({ collection: 1, docId: 1, createdAt: 1 });
+tokenLogSchema.index({ collection: 1, subjectType: 1, subjectKey: 1, createdAt: 1 });
+tokenLogSchema.index({ collection: 1, subjectType: 1, subjectKeys: 1, createdAt: 1 });
 tokenLogSchema.index({ deleted: 1, createdAt: -1 });
 
 const TokenLog = mongoose.model('TokenLog', tokenLogSchema);
